@@ -1,6 +1,7 @@
 import { get } from 'svelte/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { STORAGE_KEY, createTreeStore } from './treeStore'
+import { computeVisibleList } from './treeUtils'
 
 function getState(store) {
   return get(store)
@@ -10,9 +11,32 @@ function getRootNode(state) {
   return state.doc.nodes[state.doc.rootId]
 }
 
+function createMemoryStorage() {
+  const memory = new Map()
+
+  return {
+    getItem(key) {
+      return memory.has(key) ? memory.get(key) : null
+    },
+    setItem(key, value) {
+      memory.set(key, String(value))
+    },
+    removeItem(key) {
+      memory.delete(key)
+    },
+    clear() {
+      memory.clear()
+    },
+  }
+}
+
 describe('treeStore', () => {
   beforeEach(() => {
-    localStorage.clear()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: createMemoryStorage(),
+      configurable: true,
+      writable: true,
+    })
   })
 
   it('starts with a single main root node', () => {
@@ -25,7 +49,7 @@ describe('treeStore', () => {
     expect(state.cursorId).toBe(state.doc.rootId)
   })
 
-  it('restores document from localStorage when available', () => {
+  it('restores document from localStorage and migrates legacy empty nodes', () => {
     const saved = {
       rootId: 'root',
       nodes: {
@@ -33,12 +57,18 @@ describe('treeStore', () => {
           id: 'root',
           name: 'main',
           parentId: null,
+          childrenIds: ['legacy-empty'],
+        },
+        'legacy-empty': {
+          id: 'legacy-empty',
+          name: '',
+          parentId: 'root',
           childrenIds: ['develop'],
         },
         develop: {
           id: 'develop',
           name: 'develop',
-          parentId: 'root',
+          parentId: 'legacy-empty',
           childrenIds: [],
         },
       },
@@ -48,8 +78,9 @@ describe('treeStore', () => {
     const store = createTreeStore()
     const state = getState(store)
 
-    expect(state.doc.rootId).toBe('root')
-    expect(state.doc.nodes.develop.name).toBe('develop')
+    expect(state.doc.nodes['legacy-empty']).toBeUndefined()
+    expect(state.doc.nodes.root.childrenIds).toEqual(['develop'])
+    expect(state.doc.nodes.develop.parentId).toBe('root')
   })
 
   it('falls back to initial document when localStorage is corrupted', () => {
@@ -64,130 +95,130 @@ describe('treeStore', () => {
     spy.mockRestore()
   })
 
-  it('adds nodes with Enter flow and starts editing immediately', () => {
+  it('deletes selected node and promotes children while keeping order', () => {
     const store = createTreeStore()
 
     store.insertBelow()
-    let state = getState(store)
-    const firstChildId = state.cursorId
-
-    expect(state.isEditing).toBe(true)
-
-    store.setEditBuffer('develop')
-    store.confirmEdit()
-    store.insertBelow()
-    state = getState(store)
-
-    const root = getRootNode(state)
-    expect(root.childrenIds).toEqual([firstChildId, state.cursorId])
-  })
-
-  it('indents to previous sibling with Tab and outdents with Shift+Tab', () => {
-    const store = createTreeStore()
-
-    store.insertBelow()
-    const firstId = getState(store).cursorId
+    const developId = getState(store).cursorId
     store.setEditBuffer('develop')
     store.confirmEdit()
 
     store.insertBelow()
-    const secondId = getState(store).cursorId
-    store.setEditBuffer('feat-a')
+    const releaseId = getState(store).cursorId
+    store.setEditBuffer('release')
     store.confirmEdit()
 
+    store.selectCursor(releaseId)
+    store.insertBelow()
+    const hotfixId = getState(store).cursorId
+    store.setEditBuffer('hotfix')
+    store.confirmEdit()
     store.indentRight()
-    let state = getState(store)
-    let root = getRootNode(state)
 
-    expect(root.childrenIds).toEqual([firstId])
-    expect(state.doc.nodes[firstId].childrenIds).toEqual([secondId])
-    expect(state.doc.nodes[secondId].parentId).toBe(firstId)
-
-    store.outdentLeft()
-    state = getState(store)
-    root = getRootNode(state)
-
-    expect(root.childrenIds).toEqual([firstId, secondId])
-    expect(state.doc.nodes[secondId].parentId).toBe(state.doc.rootId)
-  })
-
-  it('converts editing space input into Tab-like indent without adding space', () => {
-    const store = createTreeStore()
-
-    store.insertBelow()
-    const firstId = getState(store).cursorId
-    store.setEditBuffer('develop')
-    store.confirmEdit()
-
-    store.insertBelow()
-    const secondId = getState(store).cursorId
-    store.applyTypedChar(' ')
+    store.selectCursor(releaseId)
+    store.deleteNode()
 
     const state = getState(store)
     const root = getRootNode(state)
 
-    expect(root.childrenIds).toEqual([firstId])
-    expect(state.doc.nodes[firstId].childrenIds).toEqual([secondId])
-    expect(state.isEditing).toBe(true)
-    expect(state.editBuffer).toBe('')
+    expect(state.doc.nodes[releaseId]).toBeUndefined()
+    expect(root.childrenIds).toEqual([developId, hotfixId])
+    expect(state.doc.nodes[hotfixId].parentId).toBe(root.id)
   })
 
-  it('clears node name with delete behavior and keeps children', () => {
+  it('does not delete root node', () => {
     const store = createTreeStore()
+    const rootId = getState(store).doc.rootId
 
-    store.insertBelow()
-    const parentId = getState(store).cursorId
-    store.setEditBuffer('develop')
-    store.confirmEdit()
-
-    store.insertBelow()
-    const childId = getState(store).cursorId
-    store.setEditBuffer('feat-a')
-    store.confirmEdit()
-    store.indentRight()
-
-    store.selectCursor(parentId)
-    store.clearName()
-
+    store.deleteNode()
     const state = getState(store)
-    expect(state.doc.nodes[parentId].name).toBe('')
-    expect(state.doc.nodes[parentId].childrenIds).toEqual([childId])
-    expect(state.isEditing).toBe(true)
+    expect(state.doc.nodes[rootId]).toBeDefined()
+    expect(computeVisibleList(state.doc)).toEqual([rootId])
   })
 
-  it('supports undo and redo across editing operations', () => {
+  it('auto-removes empty node on edit confirm', () => {
     const store = createTreeStore()
     const rootId = getState(store).doc.rootId
 
     store.insertBelow()
+    const createdNodeId = getState(store).cursorId
+    store.setEditBuffer('')
+    store.confirmEdit()
+
+    const state = getState(store)
+    expect(state.doc.nodes[createdNodeId]).toBeUndefined()
+    expect(state.doc.nodes[rootId].childrenIds).toEqual([])
+  })
+
+  it('moves branch up and down with preorder shortcuts', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const developId = getState(store).cursorId
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const releaseId = getState(store).cursorId
+    store.setEditBuffer('release')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const hotfixId = getState(store).cursorId
+    store.setEditBuffer('hotfix')
+    store.confirmEdit()
+
+    store.selectCursor(hotfixId)
+    store.moveBranchUp()
+
     let state = getState(store)
-    expect(state.doc.nodes[rootId].childrenIds.length).toBe(1)
+    let root = getRootNode(state)
+    expect(root.childrenIds).toEqual([developId, hotfixId, releaseId])
+
+    store.moveBranchDown()
+    state = getState(store)
+    root = getRootNode(state)
+    expect(root.childrenIds).toEqual([developId, releaseId, hotfixId])
+  })
+
+  it('supports undo and redo across delete and move operations', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const branchId = getState(store).cursorId
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    store.deleteNode()
+    let state = getState(store)
+    expect(state.doc.nodes[branchId]).toBeUndefined()
 
     store.undo()
     state = getState(store)
-    expect(state.doc.nodes[rootId].childrenIds.length).toBe(0)
+    expect(state.doc.nodes[branchId]).toBeDefined()
 
     store.redo()
     state = getState(store)
-    expect(state.doc.nodes[rootId].childrenIds.length).toBe(1)
+    expect(state.doc.nodes[branchId]).toBeUndefined()
   })
 
   it('exports ASCII tree and persists state after edits', () => {
     const store = createTreeStore()
+    const rootId = getState(store).doc.rootId
 
     store.insertBelow()
-    const firstId = getState(store).cursorId
-    store.setEditBuffer('')
+    const developId = getState(store).cursorId
+    store.setEditBuffer('develop')
     store.confirmEdit()
 
     const ascii = store.exportAscii()
-    expect(ascii).toBe(`main\n└── (empty)`)
+    expect(ascii).toBe(`main\n└── develop`)
 
     const raw = localStorage.getItem(STORAGE_KEY)
     expect(raw).toBeTruthy()
 
     const restored = createTreeStore()
     const restoredState = getState(restored)
-    expect(getRootNode(restoredState).childrenIds).toEqual([firstId])
+    expect(restoredState.doc.nodes[rootId].childrenIds).toEqual([developId])
   })
 })
