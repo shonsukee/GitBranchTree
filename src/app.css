@@ -1,0 +1,194 @@
+:root {
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #1b2431;
+  background: linear-gradient(160deg, #f6f8fb 0%, #eef2f9 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.app {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 1.375rem;
+}
+
+.toolbar p {
+  margin: 0;
+  color: #53627c;
+  font-size: 0.9rem;
+}
+
+.tree-panel {
+  background: #fff;
+  border: 1px solid #d7dee9;
+  border-radius: 12px;
+  min-height: 60vh;
+  overflow: auto;
+  padding: 0.5rem;
+}
+
+.tree-row {
+  border-radius: 8px;
+  margin-bottom: 0.125rem;
+  padding-left: calc(var(--depth) * 1.5rem);
+}
+
+.tree-row.selected {
+  background: #e8f0ff;
+}
+
+.node-name,
+.node-input {
+  width: 100%;
+  min-height: 2.2rem;
+  display: flex;
+  align-items: center;
+  padding: 0.35rem 0.5rem;
+}
+
+.node-name {
+  cursor: pointer;
+  user-select: none;
+}
+
+.node-name.empty {
+  color: #7e8799;
+  font-style: italic;
+}
+
+.node-input {
+  border: 1px solid #4a7cff;
+  border-radius: 6px;
+  background: #f9fbff;
+  color: #1b2431;
+}
+
+button {
+  border: 1px solid #c8d3e4;
+  border-radius: 8px;
+  padding: 0.5rem 0.9rem;
+  background: #ffffff;
+  color: #1b2431;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #f3f6fc;
+}
+
+.export-button {
+  border-color: #3b5fbf;
+  background: #3b5fbf;
+  color: #fff;
+}
+
+.export-button:hover {
+  background: #2d4fa8;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal {
+  width: min(720px, 100%);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid #d7dee9;
+  padding: 1rem;
+}
+
+.modal h2 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.modal textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  border: 1px solid #c8d3e4;
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: #fbfcff;
+  color: #1b2431;
+}
+
+.modal-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.modal .ghost {
+  background: #f5f7fb;
+}
+
+.copy-status {
+  margin: 0.5rem 0 0;
+  color: #365eb4;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 700px) {
+  .app {
+    padding: 0.9rem;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .tree-panel {
+    min-height: 55vh;
+  }
+}
