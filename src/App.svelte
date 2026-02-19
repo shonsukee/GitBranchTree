@@ -4,9 +4,15 @@
   import { treeStore } from './lib/treeStore'
   import { computeVisibleRows } from './lib/treeUtils'
   import { FontAwesomeIcon } from '@fortawesome/svelte-fontawesome'
-  import { faMoon } from '@fortawesome/free-solid-svg-icons'
+  import { faMoon, faSun } from '@fortawesome/free-solid-svg-icons'
 
   const THEME_STORAGE_KEY = 'gitbranchtree.theme.v1'
+  const byPrefixAndName = {
+    fas: {
+      moon: faMoon,
+      sun: faSun,
+    },
+  }
 
   let state = get(treeStore)
   let exportOpen = false
@@ -14,6 +20,8 @@
   let copyMessage = ''
   let focusRequestId = 0
   let theme = getInitialTheme()
+  let gSequenceArmed = false
+  let gSequenceTimer = null
 
   $: applyTheme(theme)
 
@@ -25,17 +33,29 @@
   })
 
   onDestroy(() => {
+    resetGSequence()
     unsubscribe()
   })
+
+  function hasThemeStorage() {
+    return (
+      typeof localStorage !== 'undefined' &&
+      localStorage !== null &&
+      typeof localStorage.getItem === 'function' &&
+      typeof localStorage.setItem === 'function'
+    )
+  }
 
   function getInitialTheme() {
     if (typeof window === 'undefined') {
       return 'light'
     }
 
-    const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
-    if (storedTheme === 'light' || storedTheme === 'dark') {
-      return storedTheme
+    if (hasThemeStorage()) {
+      const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
+      if (storedTheme === 'light' || storedTheme === 'dark') {
+        return storedTheme
+      }
     }
 
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -51,9 +71,25 @@
 
   function toggleTheme() {
     theme = theme === 'dark' ? 'light' : 'dark'
-    if (typeof localStorage !== 'undefined') {
+    if (hasThemeStorage()) {
       localStorage.setItem(THEME_STORAGE_KEY, theme)
     }
+  }
+
+  function resetGSequence() {
+    gSequenceArmed = false
+    if (gSequenceTimer) {
+      clearTimeout(gSequenceTimer)
+      gSequenceTimer = null
+    }
+  }
+
+  function armGSequence() {
+    resetGSequence()
+    gSequenceArmed = true
+    gSequenceTimer = setTimeout(() => {
+      resetGSequence()
+    }, 450)
   }
 
   async function focusCurrentEditor(nodeId) {
@@ -115,8 +151,30 @@
   }
 
   function handleGlobalKeydown(event) {
+    const key = event.key
+    const code = event.code
+    const isKeyI = code === 'KeyI' || key === 'i' || key === 'I'
+    const isKeyG = code === 'KeyG' || key === 'g' || key === 'G'
+    const isUpperG = key === 'G' || (code === 'KeyG' && event.shiftKey)
+    const isMoveUpKey =
+      key === 'ArrowUp' ||
+      code === 'KeyK' ||
+      code === 'KeyL' ||
+      key === 'k' ||
+      key === 'K' ||
+      key === 'l' ||
+      key === 'L'
+    const isMoveDownKey =
+      key === 'ArrowDown' ||
+      code === 'KeyH' ||
+      code === 'KeyJ' ||
+      key === 'h' ||
+      key === 'H' ||
+      key === 'j' ||
+      key === 'J'
+
     if (exportOpen) {
-      if (event.key === 'Escape') {
+      if (key === 'Escape') {
         event.preventDefault()
         closeExportModal()
       }
@@ -129,73 +187,131 @@
 
     if (isUndoShortcut(event)) {
       event.preventDefault()
+      resetGSequence()
       treeStore.undo()
       return
     }
 
     if (isRedoShortcut(event)) {
       event.preventDefault()
+      resetGSequence()
       treeStore.redo()
       return
     }
 
     if (isMoveBranchUpShortcut(event)) {
       event.preventDefault()
+      resetGSequence()
       treeStore.moveBranchUp()
       return
     }
 
     if (isMoveBranchDownShortcut(event)) {
       event.preventDefault()
+      resetGSequence()
       treeStore.moveBranchDown()
       return
     }
 
-    if (state.isEditing) {
-      return
-    }
-
-    switch (event.key) {
-      case 'ArrowUp':
+    if (!state.isEditing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (isKeyG && !isUpperG) {
         event.preventDefault()
-        treeStore.moveUp()
-        return
-      case 'ArrowDown':
-        event.preventDefault()
-        treeStore.moveDown()
-        return
-      case 'Enter':
-        event.preventDefault()
-        treeStore.insertBelow()
-        return
-      case 'Tab':
-        event.preventDefault()
-        if (event.shiftKey) {
-          treeStore.outdentLeft()
+        if (gSequenceArmed) {
+          resetGSequence()
+          treeStore.moveTop()
         } else {
-          treeStore.indentRight()
+          armGSequence()
         }
         return
-      case 'Delete':
-      case 'Backspace':
+      }
+
+      if (isUpperG) {
         event.preventDefault()
-        treeStore.deleteNode()
+        resetGSequence()
+        treeStore.moveBottom()
         return
-      case ' ':
-        event.preventDefault()
-        treeStore.indentRight()
-        return
-      default:
-        break
+      }
     }
 
-    if (!isPrintableCharacter(event)) {
+    resetGSequence()
+
+    if (isKeyI) {
+      if (!state.isEditing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault()
+        treeStore.startEdit()
+      }
       return
     }
 
-    event.preventDefault()
-    treeStore.startEdit()
-    treeStore.applyTypedChar(event.key)
+    if (key === 'Escape') {
+      if (state.isEditing) {
+        event.preventDefault()
+        treeStore.confirmEdit()
+      }
+      return
+    }
+
+    if (isMoveUpKey) {
+      if (state.isEditing) {
+        return
+      }
+      event.preventDefault()
+      treeStore.moveUp()
+      return
+    }
+
+    if (isMoveDownKey) {
+      if (state.isEditing) {
+        return
+      }
+      event.preventDefault()
+      treeStore.moveDown()
+      return
+    }
+
+    if (key === 'Enter') {
+      if (state.isEditing) {
+        return
+      }
+      event.preventDefault()
+      treeStore.insertBelow()
+      return
+    }
+
+    if (key === 'Tab') {
+      if (state.isEditing) {
+        return
+      }
+      event.preventDefault()
+      if (event.shiftKey) {
+        treeStore.outdentLeft()
+      } else {
+        treeStore.indentRight()
+      }
+      return
+    }
+
+    if (key === 'Delete' || key === 'Backspace') {
+      if (state.isEditing) {
+        return
+      }
+      event.preventDefault()
+      treeStore.deleteNode()
+      return
+    }
+
+    if (key === ' ') {
+      if (state.isEditing) {
+        return
+      }
+      event.preventDefault()
+      treeStore.indentRight()
+      return
+    }
+
+    if (state.isEditing && isPrintableCharacter(event)) {
+      return
+    }
   }
 
   function handleEditInput(event) {
@@ -206,6 +322,7 @@
     if (isUndoShortcut(event)) {
       event.preventDefault()
       event.stopPropagation()
+      resetGSequence()
       treeStore.undo()
       return
     }
@@ -213,38 +330,33 @@
     if (isRedoShortcut(event)) {
       event.preventDefault()
       event.stopPropagation()
+      resetGSequence()
       treeStore.redo()
       return
     }
 
-    switch (event.key) {
-      case 'Enter':
-        event.preventDefault()
-        event.stopPropagation()
-        treeStore.confirmEdit()
-        treeStore.insertBelow()
-        break
-      case 'Escape':
-        event.preventDefault()
-        event.stopPropagation()
-        treeStore.cancelEdit()
-        break
-      case 'Tab':
-        event.preventDefault()
-        event.stopPropagation()
-        if (event.shiftKey) {
-          treeStore.outdentLeft()
-        } else {
-          treeStore.indentRight()
-        }
-        break
-      case ' ':
-        event.preventDefault()
-        event.stopPropagation()
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      treeStore.confirmEdit()
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      treeStore.confirmEdit()
+      return
+    }
+
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.shiftKey) {
+        treeStore.outdentLeft()
+      } else {
         treeStore.indentRight()
-        break
-      default:
-        break
+      }
     }
   }
 
@@ -256,6 +368,13 @@
     treeStore.selectCursor(nodeId)
   }
 
+  function handleTreeRowKeydown(event, nodeId) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      selectNode(nodeId)
+    }
+  }
+
   function openExportModal() {
     exportText = treeStore.exportAscii()
     copyMessage = ''
@@ -265,6 +384,19 @@
   function closeExportModal() {
     copyMessage = ''
     exportOpen = false
+  }
+
+  function handleModalBackdropClick(event) {
+    if (event.target === event.currentTarget) {
+      closeExportModal()
+    }
+  }
+
+  function handleModalBackdropKeydown(event) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      closeExportModal()
+    }
   }
 
   async function copyExportText() {
@@ -298,15 +430,13 @@
       <p>Keyboard-first Git branch tree editor</p>
     </div>
     <div class="toolbar-actions">
-      <button className="theme-button" onClick={toggleTheme}>
-        <FontAwesomeIcon icon={faMoon} />
-        <!-- {theme === "light" ?
-         : (
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" aria-hidden="true">
-            {/* Font Awesome Free v7.2.0 */}
-            <path d="M320 64C178.6 64 64 178.6 64 320C64 461.4 178.6 576 320 576C388.8 576 451.3 548.8 497.3 504.6C504.6 497.6 506.7 486.7 502.6 477.5C498.5 468.3 488.9 462.6 478.8 463.4C473.9 463.8 469 464 464 464C362.4 464 280 381.6 280 280C280 207.9 321.5 145.4 382.1 115.2C391.2 110.7 396.4 100.9 395.2 90.8C394 80.7 386.6 72.5 376.7 70.3C358.4 66.2 339.4 64 320 64z" />
-          </svg>
-        )} -->
+      <span class="mode-chip" aria-live="polite">{state.isEditing ? 'INPUT' : 'FOCUS'}</span>
+      <button class="theme-button" onclick={toggleTheme} aria-label="Toggle theme">
+        {#if theme === 'dark'}
+          <FontAwesomeIcon icon={byPrefixAndName.fas['moon']} />
+        {:else}
+          <FontAwesomeIcon icon={byPrefixAndName.fas['sun']} />
+        {/if}
       </button>
       <button class="export-button" onclick={openExportModal}>Export</button>
     </div>
@@ -317,7 +447,10 @@
       <div
         class:selected={state.cursorId === row.id}
         class="tree-row"
+        role="button"
+        tabindex="0"
         onclick={() => selectNode(row.id)}
+        onkeydown={(event) => handleTreeRowKeydown(event, row.id)}
       >
         <span class="cursor-indicator">{state.cursorId === row.id ? '>' : ' '}</span>
         <span class="tree-branch">{branchPrefix(row)}</span>
@@ -340,14 +473,14 @@
   </section>
 
   {#if exportOpen}
-    <div class="modal-backdrop" onclick={closeExportModal}>
-      <section
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Export ASCII tree"
-        onclick={(event) => event.stopPropagation()}
-      >
+    <div
+      class="modal-backdrop"
+      role="button"
+      tabindex="0"
+      onclick={handleModalBackdropClick}
+      onkeydown={handleModalBackdropKeydown}
+    >
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Export ASCII tree">
         <h2>ASCII Export</h2>
         <textarea readonly value={exportText}></textarea>
         <div class="modal-actions">
@@ -357,7 +490,7 @@
         {#if copyMessage}
           <p class="copy-status">{copyMessage}</p>
         {/if}
-      </section>
+      </div>
     </div>
   {/if}
 </main>

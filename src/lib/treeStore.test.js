@@ -11,6 +11,15 @@ function getRootNode(state) {
   return state.doc.nodes[state.doc.rootId]
 }
 
+function assertNoEmptyNonRootNodes(state) {
+  for (const node of Object.values(state.doc.nodes)) {
+    if (node.id === state.doc.rootId) {
+      continue
+    }
+    expect(node.name).not.toBe('')
+  }
+}
+
 function createMemoryStorage() {
   const memory = new Map()
 
@@ -181,6 +190,57 @@ describe('treeStore', () => {
     expect(root.childrenIds).toEqual([developId, releaseId, hotfixId])
   })
 
+  it('moves cursor to top and bottom nodes', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const releaseId = getState(store).cursorId
+    store.setEditBuffer('release')
+    store.confirmEdit()
+
+    store.moveTop()
+    let state = getState(store)
+    expect(state.cursorId).toBe(state.doc.rootId)
+
+    store.moveBottom()
+    state = getState(store)
+    expect(state.cursorId).toBe(releaseId)
+  })
+
+  it('moves down through child and grandchild order instead of skipping subtree', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const parentId = getState(store).cursorId
+    store.setEditBuffer('parent')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const childId = getState(store).cursorId
+    store.setEditBuffer('child')
+    store.confirmEdit()
+    store.indentRight()
+
+    store.insertBelow()
+    const grandChildId = getState(store).cursorId
+    store.setEditBuffer('grand-child')
+    store.confirmEdit()
+    store.indentRight()
+
+    store.selectCursor(parentId)
+    store.moveBranchDown()
+    let visible = computeVisibleList(getState(store).doc)
+    expect(visible.slice(1, 4)).toEqual([childId, parentId, grandChildId])
+
+    store.moveBranchDown()
+    visible = computeVisibleList(getState(store).doc)
+    expect(visible.slice(1, 4)).toEqual([childId, grandChildId, parentId])
+  })
+
   it('supports undo and redo across delete and move operations', () => {
     const store = createTreeStore()
 
@@ -200,6 +260,24 @@ describe('treeStore', () => {
     store.redo()
     state = getState(store)
     expect(state.doc.nodes[branchId]).toBeUndefined()
+  })
+
+  it('does not leave empty nodes after repeated undo and redo', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    for (let i = 0; i < 5; i += 1) {
+      store.undo()
+      let state = getState(store)
+      assertNoEmptyNonRootNodes(state)
+
+      store.redo()
+      state = getState(store)
+      assertNoEmptyNonRootNodes(state)
+    }
   })
 
   it('exports ASCII tree and persists state after edits', () => {

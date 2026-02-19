@@ -4,7 +4,6 @@ import {
   computeVisibleList,
   createInitialDocument,
   generateNodeId,
-  getSubtreeIds,
   migrateLegacyEmptyNodes,
   normalizeDocument,
   serializeAsciiTree,
@@ -99,6 +98,22 @@ function moveCursorByOffset(state, offset, preserveEditing = false) {
     isEditing: preserveEditing ? state.isEditing : false,
     editBuffer: preserveEditing ? state.editBuffer : '',
     editOriginal: preserveEditing ? state.editOriginal : '',
+  }
+}
+
+function moveCursorToBoundary(state, toLast = false) {
+  const visibleList = computeVisibleList(state.doc)
+  if (visibleList.length === 0) {
+    return state
+  }
+
+  const cursorId = toLast ? visibleList[visibleList.length - 1] : visibleList[0]
+  return {
+    ...state,
+    cursorId,
+    isEditing: false,
+    editBuffer: '',
+    editOriginal: '',
   }
 }
 
@@ -409,6 +424,26 @@ function moveNodeAfter(doc, nodeId, afterNodeId) {
   return true
 }
 
+function detachNodeFromParent(doc, nodeId) {
+  const node = doc.nodes[nodeId]
+  if (!node || node.parentId === null) {
+    return false
+  }
+
+  const parent = doc.nodes[node.parentId]
+  if (!parent) {
+    return false
+  }
+
+  const index = parent.childrenIds.indexOf(node.id)
+  if (index === -1) {
+    return false
+  }
+
+  parent.childrenIds.splice(index, 1)
+  return true
+}
+
 function moveBranchUpState(state) {
   const current = state.doc.nodes[state.cursorId]
   if (!current || current.id === state.doc.rootId) {
@@ -450,26 +485,51 @@ function moveBranchDownState(state) {
 
   const visibleList = computeVisibleList(state.doc)
   const startIndex = visibleList.indexOf(current.id)
-  if (startIndex === -1) {
+  if (startIndex === -1 || startIndex >= visibleList.length - 1) {
     return state
   }
 
-  const subtreeSize = getSubtreeIds(state.doc, current.id).length
-  const endIndex = startIndex + subtreeSize - 1
-
-  if (endIndex >= visibleList.length - 1) {
-    return state
-  }
-
-  const nextRowId = visibleList[endIndex + 1]
+  const nextRowId = visibleList[startIndex + 1]
   if (!nextRowId) {
     return state
   }
 
   return withDocChange(state, (doc) => {
-    const moved = moveNodeAfter(doc, state.cursorId, nextRowId)
-    if (!moved) {
+    const node = doc.nodes[state.cursorId]
+    const nextNode = doc.nodes[nextRowId]
+    if (!node || !nextNode || node.parentId === null) {
       return { changed: false }
+    }
+
+    if (nextNode.parentId === node.id) {
+      const parent = doc.nodes[node.parentId]
+      if (!parent) {
+        return { changed: false }
+      }
+
+      const parentIndex = parent.childrenIds.indexOf(node.id)
+      const childIndex = node.childrenIds.indexOf(nextNode.id)
+      if (parentIndex === -1 || childIndex !== 0) {
+        return { changed: false }
+      }
+
+      parent.childrenIds[parentIndex] = nextNode.id
+      node.childrenIds.splice(childIndex, 1)
+      nextNode.parentId = parent.id
+      nextNode.childrenIds.unshift(node.id)
+      node.parentId = nextNode.id
+    } else if (nextNode.childrenIds.length > 0) {
+      if (!detachNodeFromParent(doc, node.id)) {
+        return { changed: false }
+      }
+
+      nextNode.childrenIds.unshift(node.id)
+      node.parentId = nextNode.id
+    } else {
+      const moved = moveNodeAfter(doc, node.id, nextNode.id)
+      if (!moved) {
+        return { changed: false }
+      }
     }
 
     return {
@@ -516,6 +576,14 @@ export function createTreeStore() {
 
     moveDown() {
       update((state) => moveCursorByOffset(state, 1))
+    },
+
+    moveTop() {
+      update((state) => moveCursorToBoundary(state, false))
+    },
+
+    moveBottom() {
+      update((state) => moveCursorToBoundary(state, true))
     },
 
     moveBranchUp() {
@@ -695,9 +763,12 @@ export function createTreeStore() {
           return state
         }
 
-        const previousDoc = cloneDocument(state.historyPast[state.historyPast.length - 1])
+        const previousDoc = migrateLegacyEmptyNodes(cloneDocument(state.historyPast[state.historyPast.length - 1]))
         const nextPast = state.historyPast.slice(0, -1)
-        const nextFuture = [cloneDocument(state.doc), ...state.historyFuture].slice(0, HISTORY_LIMIT)
+        const nextFuture = [migrateLegacyEmptyNodes(cloneDocument(state.doc)), ...state.historyFuture].slice(
+          0,
+          HISTORY_LIMIT,
+        )
         const cursorId = previousDoc.nodes[state.cursorId] ? state.cursorId : previousDoc.rootId
 
         saveDocumentToStorage(previousDoc)
@@ -722,12 +793,11 @@ export function createTreeStore() {
         }
 
         const [nextDocRaw, ...restFuture] = state.historyFuture
-        const nextDoc = cloneDocument(nextDocRaw)
-        const nextPast = appendHistory(state.historyPast, cloneDocument(state.doc))
+        const nextDoc = migrateLegacyEmptyNodes(cloneDocument(nextDocRaw))
+        const nextPast = appendHistory(state.historyPast, migrateLegacyEmptyNodes(cloneDocument(state.doc)))
         const cursorId = nextDoc.nodes[state.cursorId] ? state.cursorId : nextDoc.rootId
 
         saveDocumentToStorage(nextDoc)
-
         return {
           ...state,
           doc: nextDoc,
