@@ -2,7 +2,7 @@
   import { get } from 'svelte/store'
   import { onDestroy, tick } from 'svelte'
   import { treeStore } from './lib/treeStore'
-  import { computeVisibleRows } from './lib/treeUtils'
+  import { buildAsciiRowsWithComments, computeVisibleRows } from './lib/treeUtils'
   import { FontAwesomeIcon } from '@fortawesome/svelte-fontawesome'
   import { faMoon, faSun } from '@fortawesome/free-solid-svg-icons'
 
@@ -16,6 +16,7 @@
 
   let state = get(treeStore)
   let exportOpen = false
+  let helpOpen = false
   let exportText = ''
   let copyMessage = ''
   let focusRequestId = 0
@@ -27,8 +28,8 @@
 
   const unsubscribe = treeStore.subscribe((nextState) => {
     state = nextState
-    if (state.isEditing) {
-      focusCurrentEditor(state.cursorId)
+    if (state.mode === 'name' || state.mode === 'comment') {
+      focusCurrentEditor(state.cursorId, state.mode)
     }
   })
 
@@ -92,7 +93,7 @@
     }, 450)
   }
 
-  async function focusCurrentEditor(nodeId) {
+  async function focusCurrentEditor(nodeId, mode) {
     const requestId = ++focusRequestId
     await tick()
 
@@ -100,7 +101,9 @@
       return
     }
 
-    const input = document.getElementById(`node-input-${nodeId}`)
+    
+    const inputId = mode === 'comment' ? `node-comment-input-${nodeId}` : `node-name-input-${nodeId}`
+    const input = document.getElementById(inputId)
     if (!input) {
       return
     }
@@ -114,22 +117,34 @@
       return []
     }
 
-    return computeVisibleRows(editorState.doc).map((row) => ({
-      ...row,
-      node: editorState.doc.nodes[row.id],
-    }))
+    const metaRows = computeVisibleRows(editorState.doc)
+    const asciiRows = buildAsciiRowsWithComments(editorState.doc)
+    const asciiById = new Map(asciiRows.map((row) => [row.id, row]))
+
+    return metaRows.map((row) => {
+      const node = editorState.doc.nodes[row.id]
+      const asciiRow = asciiById.get(row.id)
+      const commentPadding = asciiRow ? Math.max(4, asciiRow.maxLeftLength - asciiRow.leftLength + 4) : 4
+
+      return {
+        ...row,
+        node,
+        commentPadding,
+      }
+    })
   }
 
   function branchPrefix(row) {
-    const guides = row.prefixGuides.map((hasGuide) => (hasGuide ? '│   ' : '    ')).join('')
+    const visibleGuides = row.depth > 0 ? row.prefixGuides.slice(1) : row.prefixGuides
+    const guides = visibleGuides.map((hasGuide) => (hasGuide ? '│   ' : '    ')).join('')
     if (row.isRoot) {
       return guides
     }
     return `${guides}${row.connector} `
   }
 
-  function isPrintableCharacter(event) {
-    return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey
+  function stopEventPropagation(event) {
+    event.stopPropagation()
   }
 
   function isUndoShortcut(event) {
@@ -150,13 +165,8 @@
     return (event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'ArrowDown'
   }
 
-  function handleGlobalKeydown(event) {
-    const key = event.key
-    const code = event.code
-    const isKeyI = code === 'KeyI' || key === 'i' || key === 'I'
-    const isKeyG = code === 'KeyG' || key === 'g' || key === 'G'
-    const isUpperG = key === 'G' || (code === 'KeyG' && event.shiftKey)
-    const isMoveUpKey =
+  function isMoveUpKey(key, code) {
+    return (
       key === 'ArrowUp' ||
       code === 'KeyK' ||
       code === 'KeyL' ||
@@ -164,7 +174,11 @@
       key === 'K' ||
       key === 'l' ||
       key === 'L'
-    const isMoveDownKey =
+    )
+  }
+
+  function isMoveDownKey(key, code) {
+    return (
       key === 'ArrowDown' ||
       code === 'KeyH' ||
       code === 'KeyJ' ||
@@ -172,11 +186,43 @@
       key === 'H' ||
       key === 'j' ||
       key === 'J'
+    )
+  }
+
+  function ensureCommentSaved() {
+    if (state.mode === 'comment') {
+      treeStore.confirmCommentEdit()
+    }
+  }
+
+  function ensureNameSaved() {
+    if (state.mode === 'name') {
+      treeStore.confirmEdit()
+    }
+  }
+
+  function handleGlobalKeydown(event) {
+    const key = event.key
+    const code = event.code
+    const isKeyI = code === 'KeyI' || key === 'i' || key === 'I'
+    const isKeyC = code === 'KeyC' || key === 'c' || key === 'C'
+    const isKeyG = code === 'KeyG' || key === 'g' || key === 'G'
+    const isUpperG = key === 'G' || (code === 'KeyG' && event.shiftKey)
+    const moveUpKey = isMoveUpKey(key, code)
+    const moveDownKey = isMoveDownKey(key, code)
 
     if (exportOpen) {
       if (key === 'Escape') {
         event.preventDefault()
         closeExportModal()
+      }
+      return
+    }
+
+    if (helpOpen) {
+      if (key === 'Escape') {
+        event.preventDefault()
+        closeHelpModal()
       }
       return
     }
@@ -199,21 +245,51 @@
       return
     }
 
-    if (isMoveBranchUpShortcut(event)) {
+    if (state.mode === 'comment') {
+      resetGSequence()
+
+      if (key === 'Escape') {
+        event.preventDefault()
+        treeStore.confirmCommentEdit()
+        return
+      }
+
+      if (key === 'Enter') {
+        event.preventDefault()
+        treeStore.confirmCommentEdit()
+        return
+      }
+
+      if (key === 'Tab') {
+        event.preventDefault()
+        return
+      }
+
+      return
+    }
+
+    if (state.mode === 'focus' && isMoveBranchUpShortcut(event)) {
       event.preventDefault()
       resetGSequence()
       treeStore.moveBranchUp()
       return
     }
 
-    if (isMoveBranchDownShortcut(event)) {
+    if (state.mode === 'focus' && isMoveBranchDownShortcut(event)) {
       event.preventDefault()
       resetGSequence()
       treeStore.moveBranchDown()
       return
     }
 
-    if (!state.isEditing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (state.mode === 'focus' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (key === '?') {
+        event.preventDefault()
+        resetGSequence()
+        openHelpModal()
+        return
+      }
+
       if (isKeyG && !isUpperG) {
         event.preventDefault()
         if (gSequenceArmed) {
@@ -236,23 +312,31 @@
     resetGSequence()
 
     if (isKeyI) {
-      if (!state.isEditing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (state.mode === 'focus' && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault()
         treeStore.startEdit()
       }
       return
     }
 
+    if (isKeyC) {
+      if (state.mode === 'focus' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault()
+        treeStore.startCommentEdit()
+      }
+      return
+    }
+
     if (key === 'Escape') {
-      if (state.isEditing) {
+      if (state.mode === 'name') {
         event.preventDefault()
         treeStore.confirmEdit()
       }
       return
     }
 
-    if (isMoveUpKey) {
-      if (state.isEditing) {
+    if (moveUpKey) {
+      if (state.mode !== 'focus') {
         return
       }
       event.preventDefault()
@@ -260,8 +344,8 @@
       return
     }
 
-    if (isMoveDownKey) {
-      if (state.isEditing) {
+    if (moveDownKey) {
+      if (state.mode !== 'focus') {
         return
       }
       event.preventDefault()
@@ -270,16 +354,16 @@
     }
 
     if (key === 'Enter') {
-      if (state.isEditing) {
+      if (state.mode !== 'focus') {
         return
       }
       event.preventDefault()
-      treeStore.insertBelow()
+      treeStore.insertChildTop()
       return
     }
 
     if (key === 'Tab') {
-      if (state.isEditing) {
+      if (state.mode !== 'focus') {
         return
       }
       event.preventDefault()
@@ -292,7 +376,7 @@
     }
 
     if (key === 'Delete' || key === 'Backspace') {
-      if (state.isEditing) {
+      if (state.mode !== 'focus') {
         return
       }
       event.preventDefault()
@@ -301,24 +385,19 @@
     }
 
     if (key === ' ') {
-      if (state.isEditing) {
+      if (state.mode !== 'focus') {
         return
       }
       event.preventDefault()
       treeStore.indentRight()
-      return
-    }
-
-    if (state.isEditing && isPrintableCharacter(event)) {
-      return
     }
   }
 
-  function handleEditInput(event) {
+  function handleNameInput(event) {
     treeStore.setEditBuffer(event.currentTarget.value)
   }
 
-  function handleEditKeydown(event) {
+  function handleNameKeydown(event) {
     if (isUndoShortcut(event)) {
       event.preventDefault()
       event.stopPropagation()
@@ -360,11 +439,56 @@
     }
   }
 
-  function handleEditBlur() {
+  function handleNameBlur() {
     treeStore.confirmEdit()
   }
 
+  function handleCommentInput(event) {
+    treeStore.setCommentBuffer(event.currentTarget.value)
+  }
+
+  function handleCommentKeydown(event) {
+    if (isUndoShortcut(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      resetGSequence()
+      treeStore.undo()
+      return
+    }
+
+    if (isRedoShortcut(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      resetGSequence()
+      treeStore.redo()
+      return
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      treeStore.confirmCommentEdit()
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      treeStore.confirmCommentEdit()
+      return
+    }
+
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+  }
+
   function selectNode(nodeId) {
+    ensureNameSaved()
+    ensureCommentSaved()
     treeStore.selectCursor(nodeId)
   }
 
@@ -376,6 +500,9 @@
   }
 
   function openExportModal() {
+    ensureNameSaved()
+    ensureCommentSaved()
+    helpOpen = false
     exportText = treeStore.exportAscii()
     copyMessage = ''
     exportOpen = true
@@ -384,6 +511,18 @@
   function closeExportModal() {
     copyMessage = ''
     exportOpen = false
+  }
+
+  function openHelpModal() {
+    ensureNameSaved()
+    ensureCommentSaved()
+    exportOpen = false
+    copyMessage = ''
+    helpOpen = true
+  }
+
+  function closeHelpModal() {
+    helpOpen = false
   }
 
   function handleModalBackdropClick(event) {
@@ -396,6 +535,19 @@
     if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
       closeExportModal()
+    }
+  }
+
+  function handleHelpBackdropClick(event) {
+    if (event.target === event.currentTarget) {
+      closeHelpModal()
+    }
+  }
+
+  function handleHelpBackdropKeydown(event) {
+    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      closeHelpModal()
     }
   }
 
@@ -419,6 +571,16 @@
       copyMessage = 'Copy failed'
     }
   }
+
+  function modeLabel(mode) {
+    if (mode === 'name') {
+      return 'INPUT'
+    }
+    if (mode === 'comment') {
+      return 'COMMENT'
+    }
+    return 'FOCUS'
+  }
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -430,12 +592,12 @@
       <p>Keyboard-first Git branch tree editor</p>
     </div>
     <div class="toolbar-actions">
-      <span class="mode-chip" aria-live="polite">{state.isEditing ? 'INPUT' : 'FOCUS'}</span>
+      <span class="mode-chip" aria-live="polite">{modeLabel(state.mode)}</span>
       <button class="theme-button" onclick={toggleTheme} aria-label="Toggle theme">
         {#if theme === 'dark'}
-          <FontAwesomeIcon icon={byPrefixAndName.fas['moon']} />
-        {:else}
           <FontAwesomeIcon icon={byPrefixAndName.fas['sun']} />
+        {:else}
+          <FontAwesomeIcon icon={byPrefixAndName.fas['moon']} />
         {/if}
       </button>
       <button class="export-button" onclick={openExportModal}>Export</button>
@@ -452,25 +614,85 @@
         onclick={() => selectNode(row.id)}
         onkeydown={(event) => handleTreeRowKeydown(event, row.id)}
       >
-        <span class="cursor-indicator">{state.cursorId === row.id ? '>' : ' '}</span>
-        <span class="tree-branch">{branchPrefix(row)}</span>
-        {#if state.isEditing && state.cursorId === row.id}
-          <input
-            id={`node-input-${row.id}`}
-            class="node-input"
-            value={state.editBuffer}
-            spellcheck="false"
-            autocomplete="off"
-            oninput={handleEditInput}
-            onkeydown={handleEditKeydown}
-            onblur={handleEditBlur}
-          />
-        {:else}
-          <span class="node-name">{row.node.name}</span>
-        {/if}
+        <div class="tree-left">
+          <span class="cursor-indicator">{state.cursorId === row.id ? '>' : ' '}</span>
+          <span class="tree-branch">{branchPrefix(row)}</span>
+          {#if state.mode === 'name' && state.cursorId === row.id}
+            <input
+              id={`node-name-input-${row.id}`}
+              class="node-input"
+              value={state.nameBuffer}
+              spellcheck="false"
+              autocomplete="off"
+              oninput={handleNameInput}
+              onkeydown={handleNameKeydown}
+              onblur={handleNameBlur}
+              onclick={stopEventPropagation}
+            />
+          {:else}
+            <span class="node-name">{row.node.name}</span>
+          {/if}
+        </div>
+        <div class="tree-comment" style={`padding-left: ${row.commentPadding}ch;`}>
+          {#if state.mode === 'comment' && state.cursorId === row.id}
+            <div class="comment-editor">
+              <span class="comment-prefix"># </span>
+              <input
+                id={`node-comment-input-${row.id}`}
+                class="comment-input"
+                value={state.commentBuffer}
+                spellcheck="false"
+                autocomplete="off"
+                oninput={handleCommentInput}
+                onkeydown={handleCommentKeydown}
+                onclick={stopEventPropagation}
+              />
+            </div>
+          {:else if row.node.comment.length > 0}
+            <div class="comment-display">
+              <span class="comment-prefix"># </span>
+              <span class="comment-text">{row.node.comment}</span>
+            </div>
+          {/if}
+        </div>
       </div>
     {/each}
   </section>
+
+  {#if helpOpen}
+    <div
+      class="modal-backdrop"
+      role="button"
+      tabindex="0"
+      onclick={handleHelpBackdropClick}
+      onkeydown={handleHelpBackdropKeydown}
+    >
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Keyboard help">
+        <h2>Keyboard Help</h2>
+        <div class="help-body">
+          <p><strong>FOCUS</strong></p>
+          <p><code>↑ / ↓</code>: カーソル移動</p>
+          <p><code>h / j</code>: 下へ移動</p>
+          <p><code>k / l</code>: 上へ移動</p>
+          <p><code>Enter</code>: 先頭子ノードを追加</p>
+          <p><code>Tab</code>: 右インデント</p>
+          <p><code>Shift + Tab</code>: 左アウトデント</p>
+          <p><code>i</code>: INPUTモード</p>
+          <p><code>c</code>: COMMENTモード</p>
+          <p><code>?</code>: このヘルプを開く</p>
+          <p><code>Esc</code>: ヘルプを閉じる</p>
+          <p><strong>INPUT</strong></p>
+          <p>通常入力 / <code>Enter</code> or <code>Esc</code> で確定</p>
+          <p><strong>COMMENT</strong></p>
+          <p>通常入力（<code>hjkl</code> は移動しない）</p>
+          <p><code>Enter</code> or <code>Esc</code> で確定してFOCUSへ</p>
+        </div>
+        <div class="modal-actions">
+          <button class="ghost" onclick={closeHelpModal}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if exportOpen}
     <div

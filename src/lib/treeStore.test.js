@@ -54,8 +54,10 @@ describe('treeStore', () => {
     const root = getRootNode(state)
 
     expect(root.name).toBe('main')
+    expect(root.comment).toBe('')
     expect(root.parentId).toBe(null)
     expect(state.cursorId).toBe(state.doc.rootId)
+    expect(state.mode).toBe('focus')
   })
 
   it('restores document from localStorage and migrates legacy empty nodes', () => {
@@ -90,6 +92,7 @@ describe('treeStore', () => {
     expect(state.doc.nodes['legacy-empty']).toBeUndefined()
     expect(state.doc.nodes.root.childrenIds).toEqual(['develop'])
     expect(state.doc.nodes.develop.parentId).toBe('root')
+    expect(state.doc.nodes.develop.comment).toBe('')
   })
 
   it('falls back to initial document when localStorage is corrupted', () => {
@@ -159,6 +162,61 @@ describe('treeStore', () => {
     expect(state.doc.nodes[rootId].childrenIds).toEqual([])
   })
 
+  it('starts comment mode with c-like API and confirms to focus', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const developId = getState(store).cursorId
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    store.startCommentEdit()
+    let state = getState(store)
+    expect(state.mode).toBe('comment')
+    expect(state.commentBuffer).toBe('')
+
+    store.setCommentBuffer('dev-note')
+    store.confirmCommentEdit()
+
+    state = getState(store)
+    expect(state.mode).toBe('focus')
+    expect(state.doc.nodes[developId].comment).toBe('dev-note')
+  })
+
+  it('keeps comment mode and saves when moving up and down', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const developId = getState(store).cursorId
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const releaseId = getState(store).cursorId
+    store.setEditBuffer('release')
+    store.confirmEdit()
+
+    store.selectCursor(developId)
+    store.startCommentEdit()
+    store.setCommentBuffer('dev-comment')
+    store.moveDown()
+
+    let state = getState(store)
+    expect(state.mode).toBe('comment')
+    expect(state.cursorId).toBe(releaseId)
+    expect(state.doc.nodes[developId].comment).toBe('dev-comment')
+    expect(state.commentBuffer).toBe('')
+
+    store.setCommentBuffer('release-comment')
+    store.moveUp()
+
+    state = getState(store)
+    expect(state.mode).toBe('comment')
+    expect(state.cursorId).toBe(developId)
+    expect(state.doc.nodes[releaseId].comment).toBe('release-comment')
+    expect(state.commentBuffer).toBe('dev-comment')
+  })
+
   it('moves branch up and down with preorder shortcuts', () => {
     const store = createTreeStore()
 
@@ -188,6 +246,71 @@ describe('treeStore', () => {
     state = getState(store)
     root = getRootNode(state)
     expect(root.childrenIds).toEqual([developId, releaseId, hotfixId])
+  })
+
+  it('does not reorder top-level branches when outdenting a root child', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const test2Id = getState(store).cursorId
+    store.setEditBuffer('test-2')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const naniId = getState(store).cursorId
+    store.setEditBuffer('nani')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const okId = getState(store).cursorId
+    store.setEditBuffer('ok')
+    store.confirmEdit()
+
+    store.selectCursor(naniId)
+    store.insertBelow()
+    const childId = getState(store).cursorId
+    store.setEditBuffer('test2')
+    store.confirmEdit()
+    store.indentRight()
+
+    const before = getState(store)
+    expect(getRootNode(before).childrenIds).toEqual([test2Id, naniId, okId])
+    expect(before.doc.nodes[naniId].childrenIds).toEqual([childId])
+
+    store.selectCursor(naniId)
+    store.outdentLeft()
+
+    const after = getState(store)
+    expect(getRootNode(after).childrenIds).toEqual([test2Id, naniId, okId])
+    expect(after.doc.nodes[naniId].childrenIds).toEqual([childId])
+    expect(after.doc.nodes[naniId].parentId).toBe(after.doc.rootId)
+  })
+
+  it('inserts a new node as the first child of the current node', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const naniId = getState(store).cursorId
+    store.setEditBuffer('nani')
+    store.confirmEdit()
+
+    store.selectCursor(naniId)
+    store.insertBelow()
+    const test2Id = getState(store).cursorId
+    store.setEditBuffer('test2')
+    store.confirmEdit()
+    store.indentRight()
+
+    store.selectCursor(naniId)
+    store.insertChildTop()
+    const newChildId = getState(store).cursorId
+    store.setEditBuffer('first-child')
+    store.confirmEdit()
+
+    const state = getState(store)
+    expect(state.doc.nodes[newChildId].parentId).toBe(naniId)
+    expect(state.doc.nodes[naniId].childrenIds[0]).toBe(newChildId)
+    expect(state.doc.nodes[naniId].childrenIds[1]).toBe(test2Id)
   })
 
   it('moves cursor to top and bottom nodes', () => {
@@ -298,5 +421,6 @@ describe('treeStore', () => {
     const restored = createTreeStore()
     const restoredState = getState(restored)
     expect(restoredState.doc.nodes[rootId].childrenIds).toEqual([developId])
+    expect(restoredState.doc.nodes[developId].comment).toBe('')
   })
 })

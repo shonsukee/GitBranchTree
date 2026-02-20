@@ -4,7 +4,8 @@ Git ブランチの派生関係を、キーボード中心で編集して ASCII 
 
 ## 機能一覧
 - ツリー構造の編集（追加、インデント、アウトデント、削除）
-- Vim ライクなモード分離
+- Vim ライクなモード分離（FOCUS / INPUT / COMMENT）
+- ブランチごとのコメント編集
 - Undo / Redo
 - ASCII ツリー Export（モーダル表示 + Copy）
 - ダークモード / ライトモード切り替え
@@ -28,12 +29,20 @@ pnpm test
 pnpm build
 ```
 
+## GitHub Pages デプロイ
+1. GitHub の対象リポジトリで `Settings > Pages` を開く
+2. `Build and deployment` の `Source` を `GitHub Actions` にする
+3. `main` ブランチに push すると `.github/workflows/deploy-pages.yml` が実行され、`dist` が Pages に公開される
+4. 公開URLは `https://shonsukee.github.io/GitBranchTree/`
+
 ## 操作方法
 ### モード
 - `FOCUS`: 移動・構造編集モード
-- `INPUT`: 名前入力モード
+- `INPUT`: ブランチ名入力モード
+- `COMMENT`: コメント入力モード
 - `i`: FOCUS から INPUT へ
-- `Esc`: INPUT から FOCUS へ（編集確定）
+- `c`: FOCUS から COMMENT へ
+- `Esc`: INPUT / COMMENT から FOCUS へ（編集確定）
 
 ### FOCUS モード操作
 - `↑ / ↓`: カーソル移動
@@ -41,7 +50,7 @@ pnpm build
 - `l` または `k`: 上へ移動
 - `gg`: 最上ノードへ移動
 - `G`: 最下ノードへ移動
-- `Enter`: 現在ノードの下に新規ノード追加
+- `Enter`: 現在ノードの先頭子ノードを追加
 - `Tab`: 右インデント（直前兄弟を親にする）
 - `Shift + Tab`: 左アウトデント
 - `Delete` / `Backspace`: ノード削除（子は繰り上げ）
@@ -49,6 +58,7 @@ pnpm build
 - `Cmd(Ctrl) + Shift + ↓`: ブランチを1段下へ移動
 - `Cmd(Ctrl) + Z`: Undo
 - `Cmd(Ctrl) + Y` または `Cmd(Ctrl) + Shift + Z`: Redo
+- `?`: 操作ヘルプモーダルを開く
 
 ### INPUT モード操作
 - 通常入力: ブランチ名編集
@@ -56,14 +66,26 @@ pnpm build
 - `Esc`: 編集確定して FOCUS へ戻る
 - スペースはブランチ名に入力されません
 
+### COMMENT モード操作
+- 通常入力: コメント編集
+- `h` / `j` / `k` / `l`: 通常入力として扱われます（移動しません）
+- `Enter`: コメント確定して FOCUS へ戻る
+- `Esc`: コメント確定して FOCUS へ戻る
+- `Tab` / `Shift + Tab`: 無効（構造変更しない）
+- `Cmd(Ctrl) + Z`: Undo
+- `Cmd(Ctrl) + Y` または `Cmd(Ctrl) + Shift + Z`: Redo
+
 ## UI
 - 選択中ノードは行頭 `>` で表示
 - ツリーは常時 ASCII スタイルで表示（`│`, `├──`, `└──`）
+- コメントは右側に表示（非空時のみ `# ` を自動付与）
 - 右上ボタンでテーマ切り替え（`Light` / `Dark`）
 
 ## Export
 - `Export` ボタンで ASCII ツリーをモーダル表示
 - `Copy` ボタンでクリップボードへコピー
+- コメントがある行だけ `# コメント` を出力
+- `#` の位置は「最長ブランチ行 + 4スペース」で列揃え
 
 ## 保存仕様
 - ドキュメント保存キー: `gitbranchtree.document.v1`

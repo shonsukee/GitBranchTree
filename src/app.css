@@ -125,10 +125,13 @@ textarea {
 .tree-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   border-radius: 8px;
   margin-bottom: 0.125rem;
   min-height: 2.2rem;
   outline: none;
+  padding-right: 0.25rem;
 }
 
 .tree-row.selected {
@@ -146,6 +149,13 @@ textarea {
   color: var(--cursor);
 }
 
+.tree-left {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+}
+
 .tree-branch {
   white-space: pre;
   color: var(--guide);
@@ -155,7 +165,7 @@ textarea {
 
 .node-name,
 .node-input {
-  width: 100%;
+  min-width: 8ch;
   min-height: 2.2rem;
   display: flex;
   align-items: center;
@@ -174,6 +184,49 @@ textarea {
   background: var(--input-bg);
 }
 
+.tree-comment {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.comment-display {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.comment-text {
+  white-space: pre;
+}
+
+.comment-editor {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  width: min(100%, 44rem);
+}
+
+.comment-prefix {
+  display: inline-block;
+  flex: 0 0 2ch;
+  width: 2ch;
+  white-space: pre;
+  color: var(--muted);
+}
+
+.comment-input {
+  min-width: 0;
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  padding: 0.25rem 0.45rem;
+}
+
 button {
   border: 1px solid var(--button-border);
   border-radius: 8px;
@@ -187,7 +240,11 @@ button:hover {
 }
 
 .theme-button {
-  min-width: 70px;
+  min-width: 44px;
+  width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .export-button {
@@ -250,6 +307,10 @@ button:hover {
   font-size: 0.9rem;
 }
 
+.help-body p {
+  margin: 0.2rem 0;
+}
+
 @media (max-width: 700px) {
   .app {
     padding: 0.9rem;
@@ -262,5 +323,17 @@ button:hover {
 
   .tree-panel {
     min-height: 55vh;
+  }
+
+  .tree-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  .tree-comment {
+    width: 100%;
+    padding-left: 1.25rem !important;
+    padding-bottom: 0.35rem;
   }
 }

@@ -12,6 +12,10 @@ import {
 export const STORAGE_KEY = 'gitbranchtree.document.v1'
 export const HISTORY_LIMIT = 100
 
+const MODE_FOCUS = 'focus'
+const MODE_NAME = 'name'
+const MODE_COMMENT = 'comment'
+
 function hasLocalStorage() {
   return (
     typeof localStorage !== 'undefined' &&
@@ -26,6 +30,89 @@ function sanitizeName(name) {
     return ''
   }
   return name.replace(/ /g, '')
+}
+
+function sanitizeComment(comment) {
+  if (typeof comment !== 'string') {
+    return ''
+  }
+  return comment
+}
+
+function emptyBuffers() {
+  return {
+    nameBuffer: '',
+    nameOriginal: '',
+    commentBuffer: '',
+    commentOriginal: '',
+  }
+}
+
+function normalizeCursorId(doc, cursorId) {
+  if (doc.nodes[cursorId]) {
+    return cursorId
+  }
+  return doc.rootId
+}
+
+function focusFields(cursorId) {
+  return {
+    cursorId,
+    mode: MODE_FOCUS,
+    ...emptyBuffers(),
+  }
+}
+
+function nameFieldsFromDoc(doc, cursorId) {
+  const node = doc.nodes[cursorId]
+  const name = node ? sanitizeName(node.name) : ''
+  return {
+    cursorId,
+    mode: MODE_NAME,
+    nameBuffer: name,
+    nameOriginal: name,
+    commentBuffer: '',
+    commentOriginal: '',
+  }
+}
+
+function commentFieldsFromDoc(doc, cursorId) {
+  const node = doc.nodes[cursorId]
+  const comment = node ? sanitizeComment(node.comment) : ''
+  return {
+    cursorId,
+    mode: MODE_COMMENT,
+    nameBuffer: '',
+    nameOriginal: '',
+    commentBuffer: comment,
+    commentOriginal: comment,
+  }
+}
+
+function preserveModeFields(state, cursorId = state.cursorId) {
+  if (state.mode === MODE_NAME) {
+    return {
+      cursorId,
+      mode: MODE_NAME,
+      nameBuffer: state.nameBuffer,
+      nameOriginal: state.nameOriginal,
+      commentBuffer: '',
+      commentOriginal: '',
+    }
+  }
+
+  if (state.mode === MODE_COMMENT) {
+    return {
+      cursorId,
+      mode: MODE_COMMENT,
+      nameBuffer: '',
+      nameOriginal: '',
+      commentBuffer: state.commentBuffer,
+      commentOriginal: state.commentOriginal,
+    }
+  }
+
+  return focusFields(cursorId)
 }
 
 function loadDocumentFromStorage() {
@@ -70,16 +157,13 @@ function appendHistory(history, docSnapshot) {
 function buildInitialState(doc) {
   return {
     doc,
-    cursorId: doc.rootId,
-    isEditing: false,
-    editBuffer: '',
-    editOriginal: '',
+    ...focusFields(doc.rootId),
     historyPast: [],
     historyFuture: [],
   }
 }
 
-function moveCursorByOffset(state, offset, preserveEditing = false) {
+function moveCursorByOffset(state, offset, preserveMode = false) {
   const visibleList = computeVisibleList(state.doc)
   const currentIndex = visibleList.indexOf(state.cursorId)
 
@@ -92,12 +176,31 @@ function moveCursorByOffset(state, offset, preserveEditing = false) {
     return state
   }
 
+  const cursorId = visibleList[targetIndex]
+  if (!preserveMode) {
+    return {
+      ...state,
+      ...focusFields(cursorId),
+    }
+  }
+
+  if (state.mode === MODE_COMMENT) {
+    return {
+      ...state,
+      ...commentFieldsFromDoc(state.doc, cursorId),
+    }
+  }
+
+  if (state.mode === MODE_NAME) {
+    return {
+      ...state,
+      ...nameFieldsFromDoc(state.doc, cursorId),
+    }
+  }
+
   return {
     ...state,
-    cursorId: visibleList[targetIndex],
-    isEditing: preserveEditing ? state.isEditing : false,
-    editBuffer: preserveEditing ? state.editBuffer : '',
-    editOriginal: preserveEditing ? state.editOriginal : '',
+    ...focusFields(cursorId),
   }
 }
 
@@ -110,10 +213,7 @@ function moveCursorToBoundary(state, toLast = false) {
   const cursorId = toLast ? visibleList[visibleList.length - 1] : visibleList[0]
   return {
     ...state,
-    cursorId,
-    isEditing: false,
-    editBuffer: '',
-    editOriginal: '',
+    ...focusFields(cursorId),
   }
 }
 
@@ -125,14 +225,52 @@ function withDocChange(state, mutator) {
     return state
   }
 
+  const cursorId = normalizeCursorId(nextDoc, result.cursorId ?? state.cursorId)
+  const mode = result.mode ?? MODE_FOCUS
+
+  let editorFields = {
+    mode,
+    nameBuffer: result.nameBuffer ?? '',
+    nameOriginal: result.nameOriginal ?? '',
+    commentBuffer: result.commentBuffer ?? '',
+    commentOriginal: result.commentOriginal ?? '',
+  }
+
+  if (mode === MODE_COMMENT && result.commentBuffer === undefined) {
+    const derived = commentFieldsFromDoc(nextDoc, cursorId)
+    editorFields = {
+      ...editorFields,
+      commentBuffer: derived.commentBuffer,
+      commentOriginal: derived.commentOriginal,
+      nameBuffer: '',
+      nameOriginal: '',
+    }
+  }
+
+  if (mode === MODE_NAME && result.nameBuffer === undefined) {
+    const derived = nameFieldsFromDoc(nextDoc, cursorId)
+    editorFields = {
+      ...editorFields,
+      nameBuffer: derived.nameBuffer,
+      nameOriginal: derived.nameOriginal,
+      commentBuffer: '',
+      commentOriginal: '',
+    }
+  }
+
+  if (mode === MODE_FOCUS) {
+    editorFields = {
+      mode: MODE_FOCUS,
+      ...emptyBuffers(),
+    }
+  }
+
   const historyPast = appendHistory(state.historyPast, cloneDocument(state.doc))
   const nextState = {
     ...state,
     doc: nextDoc,
-    cursorId: result.cursorId ?? state.cursorId,
-    isEditing: result.isEditing ?? false,
-    editBuffer: result.editBuffer ?? '',
-    editOriginal: result.editOriginal ?? '',
+    cursorId,
+    ...editorFields,
     historyPast,
     historyFuture: [],
   }
@@ -152,6 +290,7 @@ function insertBelowState(state) {
     doc.nodes[nodeId] = {
       id: nodeId,
       name: '',
+      comment: '',
       parentId: null,
       childrenIds: [],
     }
@@ -174,9 +313,40 @@ function insertBelowState(state) {
     return {
       changed: true,
       cursorId: nodeId,
-      isEditing: true,
-      editBuffer: '',
-      editOriginal: '',
+      mode: MODE_NAME,
+      nameBuffer: '',
+      nameOriginal: '',
+      commentBuffer: '',
+      commentOriginal: '',
+    }
+  })
+}
+
+function insertChildTopState(state) {
+  return withDocChange(state, (doc) => {
+    const cursorNode = doc.nodes[state.cursorId]
+    if (!cursorNode) {
+      return { changed: false }
+    }
+
+    const nodeId = generateNodeId()
+    doc.nodes[nodeId] = {
+      id: nodeId,
+      name: '',
+      comment: '',
+      parentId: cursorNode.id,
+      childrenIds: [],
+    }
+    cursorNode.childrenIds.unshift(nodeId)
+
+    return {
+      changed: true,
+      cursorId: nodeId,
+      mode: MODE_NAME,
+      nameBuffer: '',
+      nameOriginal: '',
+      commentBuffer: '',
+      commentOriginal: '',
     }
   })
 }
@@ -210,10 +380,7 @@ function indentRightState(state) {
 
     return {
       changed: true,
-      cursorId: node.id,
-      isEditing: state.isEditing,
-      editBuffer: state.editBuffer,
-      editOriginal: state.editOriginal,
+      ...preserveModeFields(state, node.id),
     }
   })
 }
@@ -225,6 +392,10 @@ function outdentLeftState(state) {
   }
 
   if (node.parentId === null) {
+    return moveCursorByOffset(state, -1, true)
+  }
+
+  if (node.parentId === state.doc.rootId) {
     return moveCursorByOffset(state, -1, true)
   }
 
@@ -246,18 +417,6 @@ function outdentLeftState(state) {
 
     parent.childrenIds.splice(currentIndex, 1)
 
-    if (parent.id === doc.rootId) {
-      current.parentId = doc.rootId
-      doc.nodes[doc.rootId].childrenIds.push(current.id)
-      return {
-        changed: true,
-        cursorId: current.id,
-        isEditing: state.isEditing,
-        editBuffer: state.editBuffer,
-        editOriginal: state.editOriginal,
-      }
-    }
-
     const grandParent = doc.nodes[parent.parentId]
     if (!grandParent) {
       return { changed: false }
@@ -271,10 +430,7 @@ function outdentLeftState(state) {
 
     return {
       changed: true,
-      cursorId: current.id,
-      isEditing: state.isEditing,
-      editBuffer: state.editBuffer,
-      editOriginal: state.editOriginal,
+      ...preserveModeFields(state, current.id),
     }
   })
 }
@@ -348,10 +504,7 @@ function deleteNodeState(state) {
 
     return {
       changed: true,
-      cursorId: result.cursorId ?? doc.rootId,
-      isEditing: false,
-      editBuffer: '',
-      editOriginal: '',
+      ...focusFields(result.cursorId ?? doc.rootId),
     }
   })
 }
@@ -469,10 +622,7 @@ function moveBranchUpState(state) {
 
     return {
       changed: true,
-      cursorId: state.cursorId,
-      isEditing: state.isEditing,
-      editBuffer: state.editBuffer,
-      editOriginal: state.editOriginal,
+      ...preserveModeFields(state, state.cursorId),
     }
   })
 }
@@ -534,10 +684,122 @@ function moveBranchDownState(state) {
 
     return {
       changed: true,
-      cursorId: state.cursorId,
-      isEditing: state.isEditing,
-      editBuffer: state.editBuffer,
-      editOriginal: state.editOriginal,
+      ...preserveModeFields(state, state.cursorId),
+    }
+  })
+}
+
+function confirmNameEditState(state) {
+  if (state.mode !== MODE_NAME) {
+    return state
+  }
+
+  const node = state.doc.nodes[state.cursorId]
+  if (!node) {
+    return {
+      ...state,
+      ...focusFields(state.cursorId),
+    }
+  }
+
+  const nextName = sanitizeName(state.nameBuffer)
+
+  if (nextName === '') {
+    if (node.id === state.doc.rootId) {
+      return {
+        ...state,
+        ...focusFields(state.cursorId),
+      }
+    }
+
+    return withDocChange(state, (doc) => {
+      const result = removeNodeAndPromoteChildren(doc, state.cursorId)
+      if (!result.changed) {
+        return { changed: false }
+      }
+
+      return {
+        changed: true,
+        ...focusFields(result.cursorId ?? doc.rootId),
+      }
+    })
+  }
+
+  if (node.name === nextName) {
+    return {
+      ...state,
+      ...focusFields(state.cursorId),
+    }
+  }
+
+  return withDocChange(state, (doc) => {
+    const nextNode = doc.nodes[state.cursorId]
+    if (!nextNode) {
+      return { changed: false }
+    }
+
+    nextNode.name = nextName
+    return {
+      changed: true,
+      ...focusFields(nextNode.id),
+    }
+  })
+}
+
+function confirmCommentEditState(state, nextMode = MODE_FOCUS, nextCursorId = state.cursorId) {
+  if (state.mode !== MODE_COMMENT) {
+    return state
+  }
+
+  const safeCursorId = state.doc.nodes[nextCursorId] ? nextCursorId : state.cursorId
+  const node = state.doc.nodes[state.cursorId]
+  if (!node) {
+    return {
+      ...state,
+      ...focusFields(safeCursorId),
+    }
+  }
+
+  const nextComment = sanitizeComment(state.commentBuffer)
+  if (sanitizeComment(node.comment) === nextComment) {
+    if (nextMode === MODE_COMMENT) {
+      return {
+        ...state,
+        ...commentFieldsFromDoc(state.doc, safeCursorId),
+      }
+    }
+
+    return {
+      ...state,
+      ...focusFields(safeCursorId),
+    }
+  }
+
+  return withDocChange(state, (doc) => {
+    const currentNode = doc.nodes[state.cursorId]
+    if (!currentNode) {
+      return { changed: false }
+    }
+
+    currentNode.comment = nextComment
+    const targetCursorId = doc.nodes[safeCursorId] ? safeCursorId : currentNode.id
+
+    if (nextMode === MODE_COMMENT) {
+      const target = commentFieldsFromDoc(doc, targetCursorId)
+      return {
+        changed: true,
+        mode: MODE_COMMENT,
+        cursorId: target.cursorId,
+        nameBuffer: '',
+        nameOriginal: '',
+        commentBuffer: target.commentBuffer,
+        commentOriginal: target.commentOriginal,
+      }
+    }
+
+    return {
+      changed: true,
+      ...focusFields(targetCursorId),
     }
   })
 }
@@ -560,22 +822,39 @@ export function createTreeStore() {
         if (!state.doc.nodes[nodeId]) {
           return state
         }
+
         return {
           ...state,
-          cursorId: nodeId,
-          isEditing: false,
-          editBuffer: '',
-          editOriginal: '',
+          ...focusFields(nodeId),
         }
       })
     },
 
     moveUp() {
-      update((state) => moveCursorByOffset(state, -1))
+      update((state) => {
+        if (state.mode !== MODE_COMMENT) {
+          return moveCursorByOffset(state, -1)
+        }
+
+        const visibleList = computeVisibleList(state.doc)
+        const currentIndex = visibleList.indexOf(state.cursorId)
+        const targetId = currentIndex > 0 ? visibleList[currentIndex - 1] : state.cursorId
+        return confirmCommentEditState(state, MODE_COMMENT, targetId)
+      })
     },
 
     moveDown() {
-      update((state) => moveCursorByOffset(state, 1))
+      update((state) => {
+        if (state.mode !== MODE_COMMENT) {
+          return moveCursorByOffset(state, 1)
+        }
+
+        const visibleList = computeVisibleList(state.doc)
+        const currentIndex = visibleList.indexOf(state.cursorId)
+        const targetId =
+          currentIndex !== -1 && currentIndex < visibleList.length - 1 ? visibleList[currentIndex + 1] : state.cursorId
+        return confirmCommentEditState(state, MODE_COMMENT, targetId)
+      })
     },
 
     moveTop() {
@@ -596,6 +875,10 @@ export function createTreeStore() {
 
     insertBelow() {
       update((state) => insertBelowState(state))
+    },
+
+    insertChildTop() {
+      update((state) => insertChildTopState(state))
     },
 
     indentRight() {
@@ -620,23 +903,23 @@ export function createTreeStore() {
         if (!node) {
           return state
         }
+
         return {
           ...state,
-          isEditing: true,
-          editBuffer: node.name,
-          editOriginal: node.name,
+          ...nameFieldsFromDoc(state.doc, state.cursorId),
         }
       })
     },
 
     setEditBuffer(value) {
       update((state) => {
-        if (!state.isEditing) {
+        if (state.mode !== MODE_NAME) {
           return state
         }
+
         return {
           ...state,
-          editBuffer: sanitizeName(value),
+          nameBuffer: sanitizeName(value),
         }
       })
     },
@@ -656,103 +939,81 @@ export function createTreeStore() {
           return state
         }
 
-        if (!state.isEditing) {
+        if (state.mode !== MODE_NAME) {
           return {
             ...state,
-            isEditing: true,
-            editBuffer: `${node.name}${char}`,
-            editOriginal: node.name,
+            mode: MODE_NAME,
+            nameBuffer: `${sanitizeName(node.name)}${char}`,
+            nameOriginal: sanitizeName(node.name),
+            commentBuffer: '',
+            commentOriginal: '',
           }
         }
 
         return {
           ...state,
-          editBuffer: `${state.editBuffer}${char}`,
+          nameBuffer: `${state.nameBuffer}${char}`,
         }
       })
     },
 
     confirmEdit() {
-      update((state) => {
-        if (!state.isEditing) {
-          return state
-        }
-
-        const node = state.doc.nodes[state.cursorId]
-        if (!node) {
-          return {
-            ...state,
-            isEditing: false,
-            editBuffer: '',
-            editOriginal: '',
-          }
-        }
-
-        const nextName = sanitizeName(state.editBuffer)
-
-        if (nextName === '') {
-          if (node.id === state.doc.rootId) {
-            return {
-              ...state,
-              isEditing: false,
-              editBuffer: '',
-              editOriginal: '',
-            }
-          }
-
-          return withDocChange(state, (doc) => {
-            const result = removeNodeAndPromoteChildren(doc, state.cursorId)
-            if (!result.changed) {
-              return { changed: false }
-            }
-
-            return {
-              changed: true,
-              cursorId: result.cursorId ?? doc.rootId,
-              isEditing: false,
-              editBuffer: '',
-              editOriginal: '',
-            }
-          })
-        }
-
-        if (node.name === nextName) {
-          return {
-            ...state,
-            isEditing: false,
-            editBuffer: '',
-            editOriginal: '',
-          }
-        }
-
-        return withDocChange(state, (doc) => {
-          const nextNode = doc.nodes[state.cursorId]
-          if (!nextNode) {
-            return { changed: false }
-          }
-
-          nextNode.name = nextName
-          return {
-            changed: true,
-            cursorId: nextNode.id,
-            isEditing: false,
-            editBuffer: '',
-            editOriginal: '',
-          }
-        })
-      })
+      update((state) => confirmNameEditState(state))
     },
 
     cancelEdit() {
       update((state) => {
-        if (!state.isEditing) {
+        if (state.mode !== MODE_NAME) {
           return state
         }
+
         return {
           ...state,
-          isEditing: false,
-          editBuffer: '',
-          editOriginal: '',
+          ...focusFields(state.cursorId),
+        }
+      })
+    },
+
+    startCommentEdit() {
+      update((state) => {
+        const node = state.doc.nodes[state.cursorId]
+        if (!node) {
+          return state
+        }
+
+        return {
+          ...state,
+          ...commentFieldsFromDoc(state.doc, state.cursorId),
+        }
+      })
+    },
+
+    setCommentBuffer(value) {
+      update((state) => {
+        if (state.mode !== MODE_COMMENT) {
+          return state
+        }
+
+        return {
+          ...state,
+          commentBuffer: sanitizeComment(value),
+        }
+      })
+    },
+
+    confirmCommentEdit(keepMode = false) {
+      update((state) => confirmCommentEditState(state, keepMode ? MODE_COMMENT : MODE_FOCUS))
+    },
+
+    cancelCommentEdit() {
+      update((state) => {
+        if (state.mode !== MODE_COMMENT) {
+          return state
+        }
+
+        return {
+          ...state,
+          ...focusFields(state.cursorId),
         }
       })
     },
@@ -776,10 +1037,7 @@ export function createTreeStore() {
         return {
           ...state,
           doc: previousDoc,
-          cursorId,
-          isEditing: false,
-          editBuffer: '',
-          editOriginal: '',
+          ...focusFields(cursorId),
           historyPast: nextPast,
           historyFuture: nextFuture,
         }
@@ -801,10 +1059,7 @@ export function createTreeStore() {
         return {
           ...state,
           doc: nextDoc,
-          cursorId,
-          isEditing: false,
-          editBuffer: '',
-          editOriginal: '',
+          ...focusFields(cursorId),
           historyPast: nextPast,
           historyFuture: restFuture,
         }

@@ -15,6 +15,7 @@ export function createInitialDocument() {
       [rootId]: {
         id: rootId,
         name: 'main',
+        comment: '',
         parentId: null,
         childrenIds: [],
       },
@@ -29,6 +30,7 @@ export function cloneDocument(doc) {
     nodes[id] = {
       id: node.id,
       name: node.name,
+      comment: typeof node.comment === 'string' ? node.comment : '',
       parentId: node.parentId,
       childrenIds: [...node.childrenIds],
     }
@@ -94,6 +96,7 @@ export function normalizeDocument(rawDoc) {
     nodes[id] = {
       id,
       name: rawNode.name,
+      comment: typeof rawNode.comment === 'string' ? rawNode.comment : '',
       parentId: rawNode.parentId,
       childrenIds: [...rawNode.childrenIds],
     }
@@ -298,38 +301,61 @@ export function migrateLegacyEmptyNodes(doc) {
   return migrated
 }
 
-export function serializeAsciiTree(doc) {
+function branchPrefixFromRow(row) {
+  const visibleGuides = row.depth > 0 ? row.prefixGuides.slice(1) : row.prefixGuides
+  const guides = visibleGuides.map((hasGuide) => (hasGuide ? '│   ' : '    ')).join('')
+  if (row.isRoot) {
+    return guides
+  }
+  return `${guides}${row.connector} `
+}
+
+function stringLength(value) {
+  return Array.from(value).length
+}
+
+export function buildAsciiRowsWithComments(doc) {
   if (!doc || !doc.nodes || !doc.rootId || !doc.nodes[doc.rootId]) {
-    return ''
+    return []
   }
 
-  const lines = []
-  const visited = new Set()
-  const root = doc.nodes[doc.rootId]
+  const rows = computeVisibleRows(doc).map((row) => {
+    const node = doc.nodes[row.id]
+    const left = `${branchPrefixFromRow(row)}${node.name}`
+    const leftLength = stringLength(left)
+    const comment = typeof node.comment === 'string' ? node.comment : ''
 
-  lines.push(root.name)
-  visited.add(root.id)
+    return {
+      id: row.id,
+      left,
+      leftLength,
+      comment,
+      maxLeftLength: 0,
+      line: left,
+    }
+  })
 
-  const walkChildren = (parentId, ancestorHasNext) => {
-    const parent = doc.nodes[parentId]
-    if (!parent) {
-      return
+  const maxLeftLength = rows.reduce((max, row) => Math.max(max, row.leftLength), 0)
+
+  return rows.map((row) => {
+    const padded = {
+      ...row,
+      maxLeftLength,
     }
 
-    const children = parent.childrenIds.filter((childId) => doc.nodes[childId] && !visited.has(childId))
+    if (row.comment.length === 0) {
+      return padded
+    }
 
-    children.forEach((childId, index) => {
-      const child = doc.nodes[childId]
-      const isLast = index === children.length - 1
-      const spacer = ancestorHasNext.map((hasNext) => (hasNext ? '│   ' : '    ')).join('')
-      const branch = isLast ? '└── ' : '├── '
+    const spaces = ' '.repeat(maxLeftLength - row.leftLength + 4)
+    return {
+      ...padded,
+      line: `${row.left}${spaces}# ${row.comment}`,
+    }
+  })
+}
 
-      lines.push(`${spacer}${branch}${child.name}`)
-      visited.add(childId)
-      walkChildren(childId, [...ancestorHasNext, !isLast])
-    })
-  }
-
-  walkChildren(root.id, [])
-  return lines.join('\n')
+export function serializeAsciiTree(doc) {
+  const rows = buildAsciiRowsWithComments(doc)
+  return rows.map((row) => row.line).join('\n')
 }
