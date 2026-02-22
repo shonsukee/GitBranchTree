@@ -1,12 +1,24 @@
 <script>
   import { get } from 'svelte/store'
   import { onDestroy, tick } from 'svelte'
-  import { treeStore } from './lib/treeStore'
-  import { buildAsciiRowsWithComments, computeVisibleRows } from './lib/treeUtils'
   import { FontAwesomeIcon } from '@fortawesome/svelte-fontawesome'
   import { faMoon, faSun } from '@fortawesome/free-solid-svg-icons'
+  import TreePanel from './components/tree/TreePanel.svelte'
+  import ExportModal from './components/modals/ExportModal.svelte'
+  import HelpModal from './components/modals/HelpModal.svelte'
+  import BottomActionBar from './components/mobile/BottomActionBar.svelte'
+  import { treeStore } from './lib/treeStore'
+  import { buildAsciiRowsWithComments, computeVisibleRows } from './lib/tree'
+  import { shouldRefocusEditor, getEditorInputId } from './features/editor/editorFocusPolicy'
+  import { createGlobalKeydownHandler } from './features/keyboard/globalKeyHandler'
+  import { isCommentToInputShortcut, isRedoShortcut, isUndoShortcut } from './features/keyboard/keyMap'
+  import { EXPORT_FORMAT_ASCII, buildExportText, formatLabel } from './features/export/exportFormats'
+  import { createDoubleTapDetector } from './features/interaction/doubleTap'
 
   const THEME_STORAGE_KEY = 'gitbranchtree.theme.v1'
+  const focusOnlyBottomActions = new Set(['add-child', 'indent', 'outdent'])
+  const registerNameTap = createDoubleTapDetector()
+
   const byPrefixAndName = {
     fas: {
       moon: faMoon,
@@ -17,6 +29,7 @@
   let state = get(treeStore)
   let exportOpen = false
   let helpOpen = false
+  let exportFormat = EXPORT_FORMAT_ASCII
   let exportText = ''
   let copyMessage = ''
   let focusRequestId = 0
@@ -27,9 +40,17 @@
   $: applyTheme(theme)
 
   const unsubscribe = treeStore.subscribe((nextState) => {
+    const prevState = state
     state = nextState
-    if (state.mode === 'name' || state.mode === 'comment') {
-      focusCurrentEditor(state.cursorId, state.mode)
+
+    const activeElementId = typeof document !== 'undefined' ? document.activeElement?.id ?? null : null
+    if (shouldRefocusEditor(prevState, nextState, activeElementId)) {
+      const shouldMoveCaretToEnd = !prevState || prevState.mode !== nextState.mode || prevState.cursorId !== nextState.cursorId
+      focusCurrentEditor(nextState.cursorId, nextState.mode, shouldMoveCaretToEnd)
+    }
+
+    if (exportOpen) {
+      refreshExportText()
     }
   })
 
@@ -93,7 +114,7 @@
     }, 450)
   }
 
-  async function focusCurrentEditor(nodeId, mode) {
+  async function focusCurrentEditor(nodeId, mode, placeCaretAtEnd = false) {
     const requestId = ++focusRequestId
     await tick()
 
@@ -101,15 +122,23 @@
       return
     }
 
-    
-    const inputId = mode === 'comment' ? `node-comment-input-${nodeId}` : `node-name-input-${nodeId}`
+    const inputId = getEditorInputId(mode, nodeId)
+    if (!inputId) {
+      return
+    }
+
     const input = document.getElementById(inputId)
     if (!input) {
       return
     }
 
-    input.focus()
-    input.setSelectionRange(input.value.length, input.value.length)
+    if (document.activeElement !== input) {
+      input.focus()
+    }
+
+    if (placeCaretAtEnd && typeof input.setSelectionRange === 'function') {
+      input.setSelectionRange(input.value.length, input.value.length)
+    }
   }
 
   function rowsFromState(editorState) {
@@ -143,52 +172,6 @@
     return `${guides}${row.connector} `
   }
 
-  function stopEventPropagation(event) {
-    event.stopPropagation()
-  }
-
-  function isUndoShortcut(event) {
-    return (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z'
-  }
-
-  function isRedoShortcut(event) {
-    const isPrimaryRedo = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y'
-    const isMacRedo = (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'z'
-    return isPrimaryRedo || isMacRedo
-  }
-
-  function isMoveBranchUpShortcut(event) {
-    return (event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'ArrowUp'
-  }
-
-  function isMoveBranchDownShortcut(event) {
-    return (event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'ArrowDown'
-  }
-
-  function isMoveUpKey(key, code) {
-    return (
-      key === 'ArrowUp' ||
-      code === 'KeyK' ||
-      code === 'KeyL' ||
-      key === 'k' ||
-      key === 'K' ||
-      key === 'l' ||
-      key === 'L'
-    )
-  }
-
-  function isMoveDownKey(key, code) {
-    return (
-      key === 'ArrowDown' ||
-      code === 'KeyH' ||
-      code === 'KeyJ' ||
-      key === 'h' ||
-      key === 'H' ||
-      key === 'j' ||
-      key === 'J'
-    )
-  }
-
   function ensureCommentSaved() {
     if (state.mode === 'comment') {
       treeStore.confirmCommentEdit()
@@ -201,237 +184,72 @@
     }
   }
 
+  function getState() {
+    return state
+  }
+
+  function isExportOpen() {
+    return exportOpen
+  }
+
+  function isHelpOpen() {
+    return helpOpen
+  }
+
+  const handleGlobalKeydownInternal = createGlobalKeydownHandler({
+    getState,
+    isExportOpen,
+    closeExportModal,
+    isHelpOpen,
+    closeHelpModal,
+    openHelpModal,
+    resetGSequence,
+    armGSequence,
+    isGSequenceArmed: () => gSequenceArmed,
+    treeStore,
+  })
+
   function handleGlobalKeydown(event) {
-    const key = event.key
-    const code = event.code
-    const isKeyI = code === 'KeyI' || key === 'i' || key === 'I'
-    const isKeyC = code === 'KeyC' || key === 'c' || key === 'C'
-    const isKeyG = code === 'KeyG' || key === 'g' || key === 'G'
-    const isUpperG = key === 'G' || (code === 'KeyG' && event.shiftKey)
-    const moveUpKey = isMoveUpKey(key, code)
-    const moveDownKey = isMoveDownKey(key, code)
-
-    if (exportOpen) {
-      if (key === 'Escape') {
-        event.preventDefault()
-        closeExportModal()
-      }
-      return
-    }
-
-    if (helpOpen) {
-      if (key === 'Escape') {
-        event.preventDefault()
-        closeHelpModal()
-      }
-      return
-    }
-
-    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
-      return
-    }
-
-    if (isUndoShortcut(event)) {
-      event.preventDefault()
-      resetGSequence()
-      treeStore.undo()
-      return
-    }
-
-    if (isRedoShortcut(event)) {
-      event.preventDefault()
-      resetGSequence()
-      treeStore.redo()
-      return
-    }
-
-    if (state.mode === 'comment') {
-      resetGSequence()
-
-      if (key === 'Escape') {
-        event.preventDefault()
-        treeStore.confirmCommentEdit()
-        return
-      }
-
-      if (key === 'Enter') {
-        event.preventDefault()
-        treeStore.confirmCommentEdit()
-        return
-      }
-
-      if (key === 'Tab') {
-        event.preventDefault()
-        return
-      }
-
-      return
-    }
-
-    if (state.mode === 'focus' && isMoveBranchUpShortcut(event)) {
-      event.preventDefault()
-      resetGSequence()
-      treeStore.moveBranchUp()
-      return
-    }
-
-    if (state.mode === 'focus' && isMoveBranchDownShortcut(event)) {
-      event.preventDefault()
-      resetGSequence()
-      treeStore.moveBranchDown()
-      return
-    }
-
-    if (state.mode === 'focus' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      if (key === '?') {
-        event.preventDefault()
-        resetGSequence()
-        openHelpModal()
-        return
-      }
-
-      if (isKeyG && !isUpperG) {
-        event.preventDefault()
-        if (gSequenceArmed) {
-          resetGSequence()
-          treeStore.moveTop()
-        } else {
-          armGSequence()
-        }
-        return
-      }
-
-      if (isUpperG) {
-        event.preventDefault()
-        resetGSequence()
-        treeStore.moveBottom()
-        return
-      }
-    }
-
-    resetGSequence()
-
-    if (isKeyI) {
-      if (state.mode === 'focus' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        event.preventDefault()
-        treeStore.startEdit()
-      }
-      return
-    }
-
-    if (isKeyC) {
-      if (state.mode === 'focus' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        event.preventDefault()
-        treeStore.startCommentEdit()
-      }
-      return
-    }
-
-    if (key === 'Escape') {
-      if (state.mode === 'name') {
-        event.preventDefault()
-        treeStore.confirmEdit()
-      }
-      return
-    }
-
-    if (moveUpKey) {
-      if (state.mode !== 'focus') {
-        return
-      }
-      event.preventDefault()
-      treeStore.moveUp()
-      return
-    }
-
-    if (moveDownKey) {
-      if (state.mode !== 'focus') {
-        return
-      }
-      event.preventDefault()
-      treeStore.moveDown()
-      return
-    }
-
-    if (key === 'Enter') {
-      if (state.mode !== 'focus') {
-        return
-      }
-      event.preventDefault()
-      treeStore.insertChildTop()
-      return
-    }
-
-    if (key === 'Tab') {
-      if (state.mode !== 'focus') {
-        return
-      }
-      event.preventDefault()
-      if (event.shiftKey) {
-        treeStore.outdentLeft()
-      } else {
-        treeStore.indentRight()
-      }
-      return
-    }
-
-    if (key === 'Delete' || key === 'Backspace') {
-      if (state.mode !== 'focus') {
-        return
-      }
-      event.preventDefault()
-      treeStore.deleteNode()
-      return
-    }
-
-    if (key === ' ') {
-      if (state.mode !== 'focus') {
-        return
-      }
-      event.preventDefault()
-      treeStore.indentRight()
-    }
+    handleGlobalKeydownInternal(event)
   }
 
   function handleNameInput(event) {
-    treeStore.setEditBuffer(event.currentTarget.value)
+    treeStore.setEditBuffer(event.detail.value)
   }
 
   function handleNameKeydown(event) {
-    if (isUndoShortcut(event)) {
-      event.preventDefault()
-      event.stopPropagation()
+    const keyEvent = event.detail
+    keyEvent.stopPropagation()
+
+    if (isUndoShortcut(keyEvent)) {
+      keyEvent.preventDefault()
       resetGSequence()
       treeStore.undo()
       return
     }
 
-    if (isRedoShortcut(event)) {
-      event.preventDefault()
-      event.stopPropagation()
+    if (isRedoShortcut(keyEvent)) {
+      keyEvent.preventDefault()
       resetGSequence()
       treeStore.redo()
       return
     }
 
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      event.stopPropagation()
+    if (keyEvent.key === 'Escape') {
+      keyEvent.preventDefault()
       treeStore.confirmEdit()
       return
     }
 
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      event.stopPropagation()
+    if (keyEvent.key === 'Enter') {
+      keyEvent.preventDefault()
       treeStore.confirmEdit()
       return
     }
 
-    if (event.key === 'Tab') {
-      event.preventDefault()
-      event.stopPropagation()
-      if (event.shiftKey) {
+    if (keyEvent.key === 'Tab') {
+      keyEvent.preventDefault()
+      if (keyEvent.shiftKey) {
         treeStore.outdentLeft()
       } else {
         treeStore.indentRight()
@@ -444,66 +262,104 @@
   }
 
   function handleCommentInput(event) {
-    treeStore.setCommentBuffer(event.currentTarget.value)
+    treeStore.setCommentBuffer(event.detail.value)
   }
 
   function handleCommentKeydown(event) {
-    if (isUndoShortcut(event)) {
-      event.preventDefault()
-      event.stopPropagation()
+    const keyEvent = event.detail
+    keyEvent.stopPropagation()
+
+    if (isUndoShortcut(keyEvent)) {
+      keyEvent.preventDefault()
       resetGSequence()
       treeStore.undo()
       return
     }
 
-    if (isRedoShortcut(event)) {
-      event.preventDefault()
-      event.stopPropagation()
+    if (isRedoShortcut(keyEvent)) {
+      keyEvent.preventDefault()
       resetGSequence()
       treeStore.redo()
       return
     }
 
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      event.stopPropagation()
+    if (isCommentToInputShortcut(keyEvent)) {
+      keyEvent.preventDefault()
+      resetGSequence()
+      treeStore.confirmCommentEdit()
+      treeStore.startEdit()
+      return
+    }
+
+    if (keyEvent.key === 'ArrowUp') {
+      keyEvent.preventDefault()
+      resetGSequence()
+      treeStore.moveUp()
+      return
+    }
+
+    if (keyEvent.key === 'ArrowDown') {
+      keyEvent.preventDefault()
+      resetGSequence()
+      treeStore.moveDown()
+      return
+    }
+
+    if (keyEvent.key === 'Escape') {
+      keyEvent.preventDefault()
       treeStore.confirmCommentEdit()
       return
     }
 
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      event.stopPropagation()
+    if (keyEvent.key === 'Enter') {
+      keyEvent.preventDefault()
       treeStore.confirmCommentEdit()
       return
     }
 
-    if (event.key === 'Tab') {
-      event.preventDefault()
-      event.stopPropagation()
-      return
+    if (keyEvent.key === 'Tab') {
+      keyEvent.preventDefault()
     }
-
   }
 
   function selectNode(nodeId) {
+    if (state.cursorId === nodeId && (state.mode === 'name' || state.mode === 'comment')) {
+      return
+    }
+
     ensureNameSaved()
     ensureCommentSaved()
     treeStore.selectCursor(nodeId)
   }
 
-  function handleTreeRowKeydown(event, nodeId) {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      selectNode(nodeId)
+  function handleRowSelect(event) {
+    selectNode(event.detail.nodeId)
+  }
+
+  function handleNameTap(event) {
+    if (state.mode !== 'focus') {
+      return
     }
+
+    const { nodeId, timeStamp } = event.detail
+    const isDoubleTap = registerNameTap(nodeId, timeStamp)
+    if (!isDoubleTap) {
+      return
+    }
+
+    selectNode(nodeId)
+    treeStore.startEdit()
+  }
+
+  function refreshExportText() {
+    exportText = buildExportText(exportFormat, treeStore)
   }
 
   function openExportModal() {
     ensureNameSaved()
     ensureCommentSaved()
     helpOpen = false
-    exportText = treeStore.exportAscii()
+    refreshExportText()
     copyMessage = ''
     exportOpen = true
   }
@@ -511,6 +367,12 @@
   function closeExportModal() {
     copyMessage = ''
     exportOpen = false
+  }
+
+  function handleExportFormatChange(event) {
+    exportFormat = event.detail.format
+    refreshExportText()
+    copyMessage = ''
   }
 
   function openHelpModal() {
@@ -525,29 +387,77 @@
     helpOpen = false
   }
 
-  function handleModalBackdropClick(event) {
-    if (event.target === event.currentTarget) {
-      closeExportModal()
-    }
-  }
+  function handleBottomAction(event) {
+    const { action } = event.detail
 
-  function handleModalBackdropKeydown(event) {
-    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      closeExportModal()
+    if (focusOnlyBottomActions.has(action) && state.mode !== 'focus') {
+      return
     }
-  }
 
-  function handleHelpBackdropClick(event) {
-    if (event.target === event.currentTarget) {
-      closeHelpModal()
+    resetGSequence()
+
+    if (action === 'up') {
+      if (state.mode === 'name') {
+        return
+      }
+      treeStore.moveUp()
+      return
     }
-  }
-
-  function handleHelpBackdropKeydown(event) {
-    if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      closeHelpModal()
+    if (action === 'down') {
+      if (state.mode === 'name') {
+        return
+      }
+      treeStore.moveDown()
+      return
+    }
+    if (action === 'add-child') {
+      treeStore.insertChildTop()
+      return
+    }
+    if (action === 'indent') {
+      treeStore.indentRight()
+      return
+    }
+    if (action === 'outdent') {
+      treeStore.outdentLeft()
+      return
+    }
+    if (action === 'input') {
+      if (state.mode === 'name') {
+        treeStore.confirmEdit()
+        return
+      }
+      if (state.mode === 'comment') {
+        treeStore.confirmCommentEdit()
+        treeStore.startEdit()
+        return
+      }
+      if (state.mode === 'focus') {
+        treeStore.startEdit()
+      }
+      return
+    }
+    if (action === 'comment') {
+      if (state.mode === 'comment') {
+        treeStore.confirmCommentEdit()
+        return
+      }
+      if (state.mode === 'name') {
+        treeStore.confirmEdit()
+        treeStore.startCommentEdit()
+        return
+      }
+      if (state.mode === 'focus') {
+        treeStore.startCommentEdit()
+      }
+      return
+    }
+    if (action === 'help') {
+      openHelpModal()
+      return
+    }
+    if (action === 'export') {
+      openExportModal()
     }
   }
 
@@ -566,7 +476,7 @@
         document.execCommand('copy')
         document.body.removeChild(textarea)
       }
-      copyMessage = 'Copied to clipboard'
+      copyMessage = `Copied ${formatLabel(exportFormat)}`
     } catch (error) {
       copyMessage = 'Copy failed'
     }
@@ -589,7 +499,7 @@
   <header class="toolbar">
     <div>
       <h1>GitBranchTree</h1>
-      <p>Keyboard-first Git branch tree editor</p>
+      <p>Neo Console branch editor for keyboard and touch</p>
     </div>
     <div class="toolbar-actions">
       <span class="mode-chip" aria-live="polite">{modeLabel(state.mode)}</span>
@@ -604,115 +514,30 @@
     </div>
   </header>
 
-  <section class="tree-panel" aria-label="Branch tree">
-    {#each rowsFromState(state) as row (row.id)}
-      <div
-        class:selected={state.cursorId === row.id}
-        class="tree-row"
-        role="button"
-        tabindex="0"
-        onclick={() => selectNode(row.id)}
-        onkeydown={(event) => handleTreeRowKeydown(event, row.id)}
-      >
-        <div class="tree-left">
-          <span class="cursor-indicator">{state.cursorId === row.id ? '>' : ' '}</span>
-          <span class="tree-branch">{branchPrefix(row)}</span>
-          {#if state.mode === 'name' && state.cursorId === row.id}
-            <input
-              id={`node-name-input-${row.id}`}
-              class="node-input"
-              value={state.nameBuffer}
-              spellcheck="false"
-              autocomplete="off"
-              oninput={handleNameInput}
-              onkeydown={handleNameKeydown}
-              onblur={handleNameBlur}
-              onclick={stopEventPropagation}
-            />
-          {:else}
-            <span class="node-name">{row.node.name}</span>
-          {/if}
-        </div>
-        <div class="tree-comment" style={`padding-left: ${row.commentPadding}ch;`}>
-          {#if state.mode === 'comment' && state.cursorId === row.id}
-            <div class="comment-editor">
-              <span class="comment-prefix"># </span>
-              <input
-                id={`node-comment-input-${row.id}`}
-                class="comment-input"
-                value={state.commentBuffer}
-                spellcheck="false"
-                autocomplete="off"
-                oninput={handleCommentInput}
-                onkeydown={handleCommentKeydown}
-                onclick={stopEventPropagation}
-              />
-            </div>
-          {:else if row.node.comment.length > 0}
-            <div class="comment-display">
-              <span class="comment-prefix"># </span>
-              <span class="comment-text">{row.node.comment}</span>
-            </div>
-          {/if}
-        </div>
-      </div>
-    {/each}
-  </section>
+  <TreePanel
+    rows={rowsFromState(state)}
+    {state}
+    {branchPrefix}
+    on:select={handleRowSelect}
+    on:nameTap={handleNameTap}
+    on:nameInput={handleNameInput}
+    on:nameKeydown={handleNameKeydown}
+    on:nameBlur={handleNameBlur}
+    on:commentInput={handleCommentInput}
+    on:commentKeydown={handleCommentKeydown}
+  />
 
-  {#if helpOpen}
-    <div
-      class="modal-backdrop"
-      role="button"
-      tabindex="0"
-      onclick={handleHelpBackdropClick}
-      onkeydown={handleHelpBackdropKeydown}
-    >
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Keyboard help">
-        <h2>Keyboard Help</h2>
-        <div class="help-body">
-          <p><strong>FOCUS</strong></p>
-          <p><code>↑ / ↓</code>: カーソル移動</p>
-          <p><code>h / j</code>: 下へ移動</p>
-          <p><code>k / l</code>: 上へ移動</p>
-          <p><code>Enter</code>: 先頭子ノードを追加</p>
-          <p><code>Tab</code>: 右インデント</p>
-          <p><code>Shift + Tab</code>: 左アウトデント</p>
-          <p><code>i</code>: INPUTモード</p>
-          <p><code>c</code>: COMMENTモード</p>
-          <p><code>?</code>: このヘルプを開く</p>
-          <p><code>Esc</code>: ヘルプを閉じる</p>
-          <p><strong>INPUT</strong></p>
-          <p>通常入力 / <code>Enter</code> or <code>Esc</code> で確定</p>
-          <p><strong>COMMENT</strong></p>
-          <p>通常入力（<code>hjkl</code> は移動しない）</p>
-          <p><code>Enter</code> or <code>Esc</code> で確定してFOCUSへ</p>
-        </div>
-        <div class="modal-actions">
-          <button class="ghost" onclick={closeHelpModal}>Close</button>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <BottomActionBar hidden={exportOpen || helpOpen} mode={state.mode} on:action={handleBottomAction} />
 
-  {#if exportOpen}
-    <div
-      class="modal-backdrop"
-      role="button"
-      tabindex="0"
-      onclick={handleModalBackdropClick}
-      onkeydown={handleModalBackdropKeydown}
-    >
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Export ASCII tree">
-        <h2>ASCII Export</h2>
-        <textarea readonly value={exportText}></textarea>
-        <div class="modal-actions">
-          <button onclick={copyExportText}>Copy</button>
-          <button class="ghost" onclick={closeExportModal}>Close</button>
-        </div>
-        {#if copyMessage}
-          <p class="copy-status">{copyMessage}</p>
-        {/if}
-      </div>
-    </div>
-  {/if}
+  <HelpModal open={helpOpen} on:close={closeHelpModal} />
+
+  <ExportModal
+    open={exportOpen}
+    format={exportFormat}
+    text={exportText}
+    {copyMessage}
+    on:close={closeExportModal}
+    on:copy={copyExportText}
+    on:changeFormat={handleExportFormatChange}
+  />
 </main>

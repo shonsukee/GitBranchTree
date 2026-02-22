@@ -423,4 +423,34 @@ describe('treeStore', () => {
     expect(restoredState.doc.nodes[rootId].childrenIds).toEqual([developId])
     expect(restoredState.doc.nodes[developId].comment).toBe('')
   })
+
+  it('exports Mermaid gitGraph text', () => {
+    const store = createTreeStore()
+
+    store.insertBelow()
+    const developId = getState(store).cursorId
+    store.setEditBuffer('develop')
+    store.confirmEdit()
+
+    store.insertBelow()
+    const releaseId = getState(store).cursorId
+    store.setEditBuffer('release')
+    store.confirmEdit()
+
+    store.selectCursor(developId)
+    store.insertChildTop()
+    const featId = getState(store).cursorId
+    store.setEditBuffer('feat-a')
+    store.confirmEdit()
+
+    const mermaid = store.exportMermaidGitGraph()
+    expect(mermaid).toContain('gitGraph')
+    expect(mermaid).toContain('branch develop')
+    expect(mermaid).toContain('branch release')
+    expect(mermaid).toContain('branch feat-a')
+    expect(mermaid).toContain('checkout develop\n  branch feat-a')
+    expect(mermaid).toContain('commit id:\"feat-a\"')
+    expect(getState(store).doc.nodes[featId].parentId).toBe(developId)
+    expect(getState(store).doc.nodes[releaseId].parentId).toBe(getState(store).doc.rootId)
+  })
 })

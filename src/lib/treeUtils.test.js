@@ -6,6 +6,7 @@ import {
   getDepth,
   migrateLegacyEmptyNodes,
   serializeAsciiTree,
+  serializeMermaidGitGraph,
 } from './treeUtils'
 
 function createFixtureDocument() {
@@ -214,5 +215,142 @@ describe('treeUtils', () => {
 │   └── test2     # test2
 ├── ok            # ok
 └── subarasii!    # subara`)
+  })
+
+  it('serializes Mermaid gitGraph from tree structure', () => {
+    const doc = createFixtureDocument()
+
+    expect(serializeMermaidGitGraph(doc)).toBe(`gitGraph
+  commit id:"main"
+  checkout main
+  branch develop
+  checkout develop
+  commit id:"develop"
+  checkout develop
+  branch feat-a
+  checkout feat-a
+  commit id:"feat-a"
+  checkout main
+  branch release
+  checkout release
+  commit id:"release"`)
+  })
+
+  it('serializes Mermaid gitGraph with unique sanitized branch names', () => {
+    const doc = {
+      rootId: 'root',
+      nodes: {
+        root: {
+          id: 'root',
+          name: 'main',
+          comment: '',
+          parentId: null,
+          childrenIds: ['a', 'b'],
+        },
+        a: {
+          id: 'a',
+          name: 'feat/a',
+          comment: 'first',
+          parentId: 'root',
+          childrenIds: [],
+        },
+        b: {
+          id: 'b',
+          name: 'feat a',
+          comment: 'second',
+          parentId: 'root',
+          childrenIds: [],
+        },
+      },
+    }
+
+    const mermaid = serializeMermaidGitGraph(doc)
+    expect(mermaid).toContain('branch feat_a')
+    expect(mermaid).toContain('branch feat_a_2')
+    expect(mermaid).not.toContain('first')
+    expect(mermaid).not.toContain('second')
+  })
+
+  it('branches from non-main root branch before creating children', () => {
+    const doc = {
+      rootId: 'root',
+      nodes: {
+        root: {
+          id: 'root',
+          name: 'feat-box_mcp',
+          comment: '',
+          parentId: null,
+          childrenIds: ['test'],
+        },
+        test: {
+          id: 'test',
+          name: 'test',
+          comment: '',
+          parentId: 'root',
+          childrenIds: ['te'],
+        },
+        te: {
+          id: 'te',
+          name: 'te',
+          comment: '',
+          parentId: 'test',
+          childrenIds: [],
+        },
+      },
+    }
+
+    expect(serializeMermaidGitGraph(doc)).toBe(`gitGraph
+  commit id:"feat-box_mcp"
+  branch feat-box_mcp
+  checkout feat-box_mcp
+  checkout feat-box_mcp
+  branch test
+  checkout test
+  commit id:"test"
+  checkout test
+  branch te
+  checkout te
+  commit id:"te"`)
+  })
+
+  it('keeps explicit parent checkout when branching multiple siblings', () => {
+    const doc = {
+      rootId: 'root',
+      nodes: {
+        root: {
+          id: 'root',
+          name: 'feat-box_mcp',
+          comment: '',
+          parentId: null,
+          childrenIds: ['a', 'b'],
+        },
+        a: {
+          id: 'a',
+          name: 'alpha',
+          comment: '',
+          parentId: 'root',
+          childrenIds: ['a1'],
+        },
+        a1: {
+          id: 'a1',
+          name: 'alpha-child',
+          comment: '',
+          parentId: 'a',
+          childrenIds: [],
+        },
+        b: {
+          id: 'b',
+          name: 'beta',
+          comment: '',
+          parentId: 'root',
+          childrenIds: [],
+        },
+      },
+    }
+
+    const mermaid = serializeMermaidGitGraph(doc)
+    expect(mermaid).toContain('checkout feat-box_mcp\n  branch alpha')
+    expect(mermaid).toContain('checkout alpha\n  branch alpha-child')
+    expect(mermaid).toContain('checkout feat-box_mcp\n  branch beta')
   })
 })
